@@ -103,3 +103,31 @@ Each Namespace and what it **isolates**
 
 When **NGNIX** container runs, it thinks it's the only process on the machine, it has its own PID 1, it has its own network interface, it has own filesystem root.
 This is all namespaces at work.
+
+#### cgroups -- Resource Control
+
+Control Group limit, account for, and isolate the resouce usage of process group. CPU, memory, disk I/O, network bandwidth
+
+Without cgroups, one container could consume all the host's memory and crash everything else, cgroups are what allow Docker to say "***This container gets max 512MB RAM and 0.5 CPU cores***".
+
+In your project, this is relevant because if MariaDB container has a memory leak, cgroups prevent it from killing ythe NGNIX container.
+
+#### Union Filesystems -- Layered Images
+
+This is the clever part that makes Docker images efficient.
+
+A Docker image is built in **layers**, each instruction in a ``Dockerfile`` creates a new layer, layers are **read-only** and **shared** between containers.
+
+```
+┌─────────────────────────┐  ← Your app code (read-write layer, per container)
+├─────────────────────────┤  ← php-fpm config (read-only layer)
+├─────────────────────────┤  ← PHP installed (read-only layer)
+├─────────────────────────┤  ← Debian base (read-only layer)
+└─────────────────────────┘
+```
+
+When you run a container, Docker adds a thin **wriable layer** on top.
+if two containers use the same base image, they share those read-only layers -- no duplication, this is OverlayFS doing the work.
+
+This also means: **Dockerfile layer order matters**, put things that change rarely (base OS, package installs) early, Put things that change often (app config) late, this makes rebuilds fast because Docker caches unchanged layers.
+***
