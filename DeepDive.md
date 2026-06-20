@@ -1,4 +1,4 @@
-### KeyWords
+### DeepDive
 
 ***This readme is dedicated to explain the keywords used in the Base Readme of this project***.
 ***
@@ -213,4 +213,100 @@ Modern Docker (and systemd) primarily use **cgroups v2**, when you run a Docker 
 
 **Security perspective** - cgroups escape:
 
-A classic attack vector is a container that has the cgroup filesystem from the host mounted inside it, if an attacker can write to the host's ``release_agent`` cgroup file (a legacy cgroup v1 feature), they can make the host kernel execute an arbitrary command with root privileges when a cgroup becomes empty, this is CVE-2022-0492 and the basis of several container escape techniques, Felix Wihelm's "cgroup container breakout" is a good resource
+A classic attack vector is a container that has the cgroup filesystem from the host mounted inside it, if an attacker can write to the host's ``release_agent`` cgroup file (a legacy cgroup v1 feature), they can make the host kernel execute an arbitrary command with root privileges when a cgroup becomes empty, this is CVE-2022-0492 and the basis of several container escape techniques, Felix Wihelm's "cgroup container breakout" is a good resource.
+***
+
+### AUFS and OverlayFS - Union Filesystem
+
+Docker images are built in layers, we need a filesystem that can:
+
+* Present multiple layers as if they are one unified system
+* Allow writes to go to a new layer without modifying the lower read-only layers
+* Share read-only layers between multiple containers (no duplication)
+
+This is what a **Union filesystem** does: it takes multiple directories (layers) and presents them as a single merged view
+***
+
+### AUFS -- Another Union Filesystem (the original)
+
+AUFS was the original union filesystem Docker used, it was not the mainline Linux kernel -- it was an out-of-tree patch, which is why it's being replaced.
+
+**How AUFS works**
+
+AUFS stacks directories called **branches**, in order from lowest to highest, when we reead a file:
+
+* AUFS searches branches from top to bottom
+* Returns the first match it finds
+
+When we write a file that exists in a lower (read-only) branch:
+
+* AUFS copies the file up to the top (writable) branch -- this is called (COW) Copy-on-Write
+* Then writes to the copy in the writable branch
+* The original in the lower branch is untouched
+
+```
+Read "nginx.conf":
+┌──────────────────────────┐  ← Container's writable layer (empty)
+├──────────────────────────┤  ← nginx config layer (FOUND here, return it)
+├──────────────────────────┤  ← nginx binary layer
+└──────────────────────────┘  ← Debian base
+
+Write "nginx.conf" (modify it):
+┌──────────────────────────┐  ← CoW copy of nginx.conf written HERE
+├──────────────────────────┤  ← original nginx.conf (untouched, still here)
+├──────────────────────────┤  ← nginx binary layer
+└──────────────────────────┘  ← Debian base
+```
+
+**Why AUFS was problematic**
+
+* Not in mainline kernel -- required custom kernel patches
+* Complex codebase, known performance issues with many layers
+* Ubuntu was the main distro that shipped it; most others didn't
+***
+
+### OverlayFS -- THe Current Standard
+
+**OverlayFS** was merged into the Linux mainline kernel in version **3.18 (2014)** and became the default Docker storage driver (``overlay2``) on modern systems, this is you are almost certainly running.
+
+OverlayFS's structure is simpler than AUFS -- if merges exactly two directories at a time: a **lower** directory (read-only) and an **upper** directory (writable), preseting them as one **merged** directory.
+
+```
+lower dir (read-only) + upper dir (writable) = merged dir (what you see)
+```
+
+For Docker's multi-layer images, OverlayFS chains multiple lower directories:
+
+```
+lower4 / lower3 / lower2 / lower1 (all read-only image layers)
+                                     + upper (writable container layer)
+                                     = merged (what the container sees)
+```
+
+### The Four Directories in overlay2
+
+When Docker creates a container with ``overlay2``, it creates four directories in ``/var/lib/docker/overlay2/<id>/``:
+
+* ``lower`` - THe merged read-only image layers (actually a chain of layer directoreis)
+* ``upper`` - The container wriable layer, all writes go here
+* ``work`` - A working directory required by **OverlayFS** for atomic operations (rename, etc...) you never look inside this directly
+* ``merged`` - The unified view presented to the container, this is what the container's filesystem root actually is
+
+**Cow (Copy-on-Write) in OverlayFS**
+
+The CoW mechanism is identical in concept to AUFS but implemented differently:
+
+* **Reading a file that exists only in lower layers**: OverlayFS returns it directly from the lower layer -- zero copy, zero overhead
+
+* **Writing to a file for the first time (file exists only in lower)**: OverlayFS copies the entire file from the lower layer to ``upper``, then writes the modification to the ``upper`` copy, the lower layer file is untouched.
+
+* **Deleting a file that exists in a lower layer**: OverlayFS cannot actually delete from the read-only lower layer, instead, it creates a **whiteout file** in ``upper`` -- a special charcter device with device numbers 0,0.
+When the merged view is constructed, any file in lower that has a corresponding whiteout in ``upper`` is hidden, the original file remains in the lower layer forever, but it's invisible.
+
+This is a subtle but important detail: **deleted files in Docker layers still take space in the image**, this is why you should chain ``RUN apt-get unstall && rm -rf /var/cache/apt`` in a singel ``RUN`` instruction -- if you split htem into two ``RUN`` commands, the files downloaded by ``apt-get install`` are immortalized in the first layer even after the second ``RUN`` deletes them.
+
+**Performance Characteristics**
+
+OverlayFS has a known performance issue, the **First write to any file is slow**, because of the CoW copy, if we write to a large file (say, a multi-GB database file) for the first time, it gets fully copied from the lower layer to the ``upper`` before the write happens, this is one reason why databases inside containers should use **Volumes** (as ***Inception*** requires)  -- volumes bypass OverlayFS entirely and writes directly to the host filesystem, no CoW, no whiteouts, real disk performance.
+This is the actual performance-negineering reason behind the project's volume requirement.
+***
