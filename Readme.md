@@ -110,7 +110,7 @@ Control Group limit, account for, and isolate the resouce usage of process group
 
 Without cgroups, one container could consume all the host's memory and crash everything else, cgroups are what allow Docker to say "***This container gets max 512MB RAM and 0.5 CPU cores***".
 
-In your project, this is relevant because if MariaDB container has a memory leak, cgroups prevent it from killing ythe NGNIX container.
+In your project, this is relevant because if MariaDB container has a memory leak, cgroups prevent it from killing the NGNIX container.
 
 #### Union Filesystems -- Layered Images
 
