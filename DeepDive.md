@@ -1,4 +1,4 @@
-### DeepDive
+# DeepDive
 
 ***This readme is dedicated to explain the keywords used in the Base Readme of this project***.
 ***
@@ -310,3 +310,76 @@ This is a subtle but important detail: **deleted files in Docker layers still ta
 OverlayFS has a known performance issue, the **First write to any file is slow**, because of the CoW copy, if we write to a large file (say, a multi-GB database file) for the first time, it gets fully copied from the lower layer to the ``upper`` before the write happens, this is one reason why databases inside containers should use **Volumes** (as ***Inception*** requires)  -- volumes bypass OverlayFS entirely and writes directly to the host filesystem, no CoW, no whiteouts, real disk performance.
 This is the actual performance-negineering reason behind the project's volume requirement.
 ***
+
+### Is ``dockerd`` a Server ?
+
+It is a server, ``dockerd`` is a long-running background process -- a **daemon** -- and it exposes an **HTTP Server** that listens for requests, by default it listens on a Unix socket: ``/var/run/docker.sock``.
+
+A Unix socket is like a network socket, but instead of going over TCP/IP across a network, it's a file on the filesystem that processes use to communicate locally, it's faster than TCP because there's no network stack involved -- it's just the kernel passing data between two processes directly.
+
+So when we type ``docker run ngnix``, here is what actually happens:
+
+```
+You type:  docker run nginx
+              │
+              ▼
+Docker CLI reads your command, constructs an HTTP request:
+
+POST /v1.41/containers/create
+Content-Type: application/json
+
+{
+  "Image": "nginx",
+  "HostConfig": { ... },
+  ...
+}
+              │
+              ▼
+CLI sends that HTTP request to:
+  unix:///var/run/docker.sock
+              │
+              ▼
+dockerd is listening on that socket.
+It receives the HTTP request, parses it, decides what to do.
+              │
+              ▼
+dockerd responds with HTTP:
+
+HTTP/1.1 201 Created
+{"Id": "a3f9b2...", "Warnings": []}
+```
+
+The Docker CLI is literally just an **HTTP Client** & the Docker Daemon is just an **HTTP Server**, The "**REST API**" between them is a documented HTTP API -- you can even talk to it using the ``curl`` command:
+
+``curl --unix-socket /var/run/docker.sock http://localhost/v1.41/containers/json``.
+
+That command lists all running containers -- same as ``dokcer ps``, no Docker CLI needed, we are talking directly to ``dockerd``.
+
+```
+Docker CLI ──► [REST/JSON over HTTP/1.1 on unix socket] ──► dockerd
+                                                             │
+                          [gRPC/protobuf over HTTP/2 on]     │
+                          [unix socket: /run/containerd/]    ▼
+                                                        containerd
+                                                             │
+                                                    [direct exec()]
+                                                             │
+                                                             ▼
+                                                           runc
+                                                    (sets up namespaces,
+                                                     cgroups, calls
+                                                     pivot_root(),
+                                                     executes PID 1)
+```
+
+**gRPC**: Google Remote Procedure Call.
+
+REST thinkgs in terms of resources, you GET a resrource, POST to create one, DELETE to remove one, gRPC thinks in terms of procedure calls -- you call a function on a remote process as if it were a local function
+
+gRPC uses:
+
+* HTTP/2 as the transport (not HTTP/1.1 like REST)
+* Protocol Buffers for serialization
+* a ``.proto`` file that defines the service interface -- the function you can call and thier argument/return types
+
+gRPC is used between ``dokcerd`` and ``containerd`` because of the speed of communication it provides, also since its used as a communication way between internal services instead of a human/client type of relationship as we saw in the case of the REST API between Docker CLI and ``dockerd``.

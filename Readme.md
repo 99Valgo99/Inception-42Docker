@@ -1,4 +1,4 @@
-## Inception 42Docker
+# Inception 42Docker
 
 ![Logo](Img/Inception.png)
 
@@ -13,7 +13,9 @@ Happy reading. and always remember:
 
 ***The conecpts written here, might be wrong or inaccurate therefore it's own you to dive deeper and find more accurate information than what can be provided here.***
 
-***
+
+## Part One
+
 When a programmer write an appliaction, the application depends on these several factos:
 
 * A specific OS Version
@@ -130,4 +132,138 @@ When you run a container, Docker adds a thin **wriable layer** on top.
 if two containers use the same base image, they share those read-only layers -- no duplication, this is OverlayFS doing the work.
 
 This also means: **Dockerfile layer order matters**, put things that change rarely (base OS, package installs) early, Put things that change often (app config) late, this makes rebuilds fast because Docker caches unchanged layers.
+
+## Part Two
+
+### Docker Architecture -- The Three Players
+
+When we type ``docker run ngnix`` in the terminal, we are not directly creating a container, we are talking to a system made of three distinct layers, each with a specific responsibility.
+
+Most people think Docker is one thing, it's not, it's a **Client-server architecture**.
+
+```
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│  Docker CLI  │ ──────► │Docker Daemon │ ──────► │  containerd  │
+│  (client)    │  REST   │  (dockerd)   │  gRPC   │  + runc      │
+└──────────────┘   API   └──────────────┘         └──────────────┘
+   You type here      Receives & decides          Actually creates
+                      what to do                  the container
+```
+
+#### **The Docker CLI**
+
+This is just a **Command line client**, when we type ``docker run``, the CLI translates that into an **HTTP Request** and sends it to the Docker Daemon over a REST API, the CLI itself has zero power -- it's just a messenger.
+
+#### **The Docker Daemon**
+
+This is the **Brain**, it's a background process that listens for requests from the CLI, manages images, networks, volumes, and tells the container runtime what to create, it's what's actually running when Docker is "running" on the machine.
+
+#### **containerd + runc**
+
+These are the **hands**, containerd manages the container lifecycle (start, stop, pause), runc is the low level tool that actually calls the Linux kernel -- it sets up the namespaces, the cgroups, the filesystem layers we mentioned in the **Part One**, and spawns the process.
+
+This is why **CVE-2019-5736** was so devastating -- **runc** is the piece touching the kernel directly, exploiting it meant escaping to the host.
+
+### Images vs Containers -- The Precise Difference
+
+Most people say "an image is a blueprint, a container is a running instance" and stop there, that's correct but shallow...
+
+#### WHat is a Docker image ?
+
+An image is a **read-only, layered filesystem snapshot** plus some metadata.
+
+That's it, There is no process running, There is no "life" in it, it just sits there on disk as a stack of layers we mentioned in **Part One** -- **OverlayFS** layers, each one a diff on top of the previous.
+
+When we build this Dockerfile
+
+```
+FROM debian:bulleye-slim        # Layer 1 - base filesystem
+RUN apt-get install -y ngnix        # Layer 2 - ngnix added on top
+COPY ngnix.conf /etc/ngnix/         # Layer 3 - your config added on top 
+```
+
+We get an image with **3 layers**, all read-only, all stored on disk, No process, No network, Nothing alive.
+
+#### What is a Container ?
+
+A container is what happend when Docker **takes an image and brings it to life**.
+
+Specifically Docker does three things:
+
+```
+        Image (read-only layers)
+                    +
+  Writable layer (new, empty, per container)
+                    +
+Linux Kernel primitives (namespaces + cgroups)
+                    =
+                Container
+```
+
+The writable layer is critical -- it's why **two containers from the same image are completely independent**. They share the read-only layers underneath (no duplication on disk), but each has its own writable layer on top. One container can't touch the other's writes.
+
+#### The Lifecycle
+
+```
+Dockerfile -- build --> Image --run --> Conatiner
+                          |                 |
+                    stored on disk    alive, has PID 1
+                    no process         has network
+                    shareable        has writable layer
+                    on DockerHub   dies when PID 1 dies
+```
+
+THat last point is crucial for the **Inception** Project -- **a container lives and dies with its PID 1**. The moment PID 1 exits, the container stops, this is exactly why ``tail -f`` and ``sleep infinity`` are forbidden hacks -- they keey PID 1 alive artificially without actually running the service properly.
+***
+
+#### How is this connceted to the Inception Projcet
+
+In the project, we will have to create **3 Dockerfiles** producing **3 Images** producing **3 containers**:
+
+* ``ngnix`` image -> ``ngnix`` container
+* ``wordpress`` image -> ``wordpress`` container
+* ``mariadb`` image -> ``mariadb`` container
+
+Each container gets its won writable layer, its own namespaces, its own PID 1 that must be a **real daemon** running in the foreground.
+***
+
+### The Docker Socket -- ``/var/run/docker.sock``
+
+#### What is it ?
+When the Docker Daemon (``dockerd``) starts, it creates a **UNIX sokcet** at ``/var/run/dokcer.sock/``.
+
+A Unix socket is just a file that acts as a communication endpoint -- instead of talking over network, processes talk to each other through a file on disk.
+
+Remember from the architecture: the Docker CLI talks to Daemon via a REST API, that REST API travels through this socket file.
+
+so essentially:
+``Docker CLI ----- HTTP Requests -----> /var/run/docker.sock -----> dockerd``
+
+#### Why Does it Exist ?
+
+Because the Daemon needs to receive commands from somewhere, the socket is the **front door** to the Docker Daemon, Whover can write to that socket can tell the Daemon to do anything -- Creates containers, Delete Containers, pull images, inspcet running containers.
+
+Anything.
+
+From a **Security StandPoint**, mounting the **Docker Socket** inside of a container, is a critical vulenrability, it will give the attacker the power to talk directly to the Docker Daemon ``dockerd`` through that socket, Create **new container**, and mount the **entire host filesystem at ``/host`` and then the attacker will have full read/write access to the host filesystem from inside that new container.
+
+**That's a full container escape**. Game over, Root on the host.
+
+#### The Privilege Reality
+
+The Docker Daemon runs as **root**, the socket is owned by root, Therefore:
+
+``Access to docker.sock = root on host``.
+
+This is why from a security research POV, finding a web application that has access to the Docker Socket -- even indirectly -- is **critical severity finding**, it's essentially instant root.
+
+#### How this Connects to Inception Project
+
+The inception project does not expose the Docker Socket to containers -- and now we know and understand exactly why that would be insane.
+
+But more importantly, our NGNIX container is the **only entrypoint** on port 443, think about what happens if someone finds an SSRF vulenrabilty in our WordPress container:
+
+``Attacker ---> Wordpress SSRF --> Internal DOcker network --> MariaDB directly``
+
+The Docker network isolation is our second line of defense, this is why the project forces us to use a **custom bridge network** -- containers can only talk to each other through defined paths, not freely across the host network.
 ***
