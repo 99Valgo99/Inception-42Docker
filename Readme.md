@@ -71,7 +71,7 @@ This means:
 * A container uses **megabytes** of overhead, not gigabytes.
 * But -- and this is where it gets interesting for secuity researchers, **The attack surface is different**.
 ***
-### Security Perspective #1 - Container Escape
+### Security Perspective - Container Escape
 
 Because containers share the host kernel, a vilnerability in the kernel or a misconfiguration in the container runtime can allow **container escape** -- an attacker inside a container breaking out to the host system.
 
@@ -266,4 +266,242 @@ But more importantly, our NGNIX container is the **only entrypoint** on port 443
 ``Attacker ---> Wordpress SSRF --> Internal DOcker network --> MariaDB directly``
 
 The Docker network isolation is our second line of defense, this is why the project forces us to use a **custom bridge network** -- containers can only talk to each other through defined paths, not freely across the host network.
-***
+
+## Part Three
+
+### Docker Networking -- How Containers Find Each Other
+
+Most people think networking is just "***containers talk to each other***", the reality is more interesting -- and more security-relevant.
+
+#### The Problem Without Docker Networking
+
+Remember from **Part One** -- each container gets its own **Network Namespace**, its own network interfaces, its own routing table and its own firewall rules.
+
+This means by default, **containers are completely blind to each other**, NGNIX can't reach WordPress, WordPress can't reach MariaDB, They're isolated islands.
+
+Docker Networking is the solution -- it's how you build **controlled bridges** between those islands.
+
+#### The Bridge Network
+
+When Docker installs, it creates a default network called ``docker0`` -- a **Virtual Bridge** on the host.
+
+Think of a bridge network like a **virtual switch** inside the machine:
+
+```
+Host Machine
+┌─────────────────────────────────────────────────┐
+│                                                 │
+│         docker0 (virtual switch)                │
+│         172.17.0.1                              │
+│        /          \          \                  │
+│   eth0(nginx)  eth0(wp)  eth0(mariadb)          │
+│   172.17.0.2   172.17.0.3  172.17.0.4           │
+│                                                 │
+└─────────────────────────────────────────────────┘
+```
+
+Each container gets a virtual network interface connected to this bridge, they can now talk to each other through it.
+
+#### Default vs Custom Bridge -- This is Critical
+
+Docker gives you a default bridge network automatically, but in the **Inception** Project, we are **forced to create a custom one** in our ``docker-compose.yml`` file, since with the custom one, we are able to configure our DNS to container names meanwhile the Default one uses IPs only, and in terms of isolation, all containers join the default one, while we can set a defined containers to join our custom network bridge.
+Also, the security is much stronger.
+
+The big one is **DNS**, on a custom bridge network, Docker runs an internal DNS Server, this means NGNIX continer can reach WordPress simply by using ``wordpress`` as the hostname -- Docker resolves it automatically to the right IP.
+
+In terms of ``docker-compose.yml`` file, this would look like:
+
+```
+networks:
+    inception_network:
+        driver: bridge
+```
+
+And every service declares it belongs to the network and Docker handles the rest.
+
+#### How The Traffic Actually Flows in **Inception**
+
+```
+    Internet
+        │
+        ▼
+    Port 443 (host)
+        │
+        ▼ iptables NAT rule (Docker creates this automatically)
+        │
+        ▼
+    NGINX container (only public entrypoint)
+        │
+        ▼ internal network (wordpress:9000)
+        │
+        ▼
+    WordPress + php-fpm container
+        │
+        ▼ internal network (mariadb:3306)
+        │
+        ▼
+    MariaDB container
+```
+
+Notice -- only NGNIX is reachable from the outside, WordPress and MariaDB are **completely invisble** to the internet, they only speak to each other over the internal Docker network.
+
+### Docker Volumes -- How Data Persists
+
+Remember the writable layer from **Part One** ? The thin layer on top of the read-only image layers that each container gets ?
+
+The problem with it -- **it dies with the container**.
+
+When a container stops or gets removed, its writable layer is gone, forever.
+For stateless apps like **NGNIX** -- That's fine, the config is baked into the image, nothing needs to persist.
+
+But for **MariaDB**? The entire WordPress Database lives in that writable layer, every post, every user, every setting, container restarts, data is gone, that's catastrophic.
+
+Docker **Volumes** solve this.
+
+#### What is Volume ?
+
+A volume is **a directory that lives on the host filesystem**, completely outside the container's lifecycle, Docker manage it, mounts it into the container at a specific path, and it **persists regardless of what happens to the container**.
+
+```
+Host filesystem                    Container
+┌─────────────────────┐           ┌─────────────────────┐
+│ /var/lib/docker/    │           │                     │
+│ volumes/            │           │  /var/lib/mysql/    │
+│ wp_database_volume/ │◄─────────►│  (MariaDB data)     │
+│ _data/              │  mounted  │                     │
+└─────────────────────┘           └─────────────────────┘
+```
+
+The container writes to ``/var/lib/mysql/`` thinking it's writing locally -- but it's actually writing to the host, container dies, data persists and stays.
+
+#### Three Types of Storage in Docker
+
+```
+---------------------------------------------------------------------------------------------------
+Type                  | What it is                      | Persists ?                | Inception ? |
+---------------------------------------------------------------------------------------------------
+* Writable Layer      | Per-container temp storage      | Dies with the container   |  No         |
+---------------------------------------------------------------------------------------------------
+* Named Volume        | Docker-managed host directory   | Yes                       | Required    |
+---------------------------------------------------------------------------------------------------
+* Bind Mount          | Direct host path mounted in     | yes                       | Forbidden   |
+---------------------------------------------------------------------------------------------------
+```
+
+#### Named Volumes vs Bind Mounts -- Why **Inception** Forbids Bind Mounts
+
+**Bind mount** -- you specify an exact host path:
+
+```
+volumes:
+    - /home/user/data:/var/lib/myswl    # bind mount
+```
+
+**Named Volume** -- Docker manages the path:
+
+```
+volumes:
+    - wp_database_volume:/var/lib/myswl     # named volume
+```
+
+The difference:
+
+* Bind mounts give the container direct access to the host filesystem -- security risk, portability risk.
+* Named Volumes are Docker-managed -- isolated, portable and safer.
+
+This is exactly why inception forbids bind mounts, a misconfigured bind mount could expose sensitive host directories directly into a container.
+
+#### Our Two **Inception** Volumes
+
+```
+volumes:
+    wp_database_volume:     # MariaDB data lives here
+    wp_website_files_volumes:       # WordPress files live here
+```
+
+Both physically stored on the host at ``/home/<login>/data/`` -- but accessed through Docker's volume management layer, not directly.
+
+This also means WordPress and NGNIX share ``wp_website_files_volume`` -- NGNIX needs to serve statis files that WordPress generates, Two containers, one volume, both have access.
+
+### docker-compose -- Orchestrating Everything Together
+
+We understand that:
+
+* **Namespaces + cgroups** -- How isolation works
+* **Images + containers** -- What runs and how
+* **Networking** -- How containers find each other
+* **Volumes** -- How data persists.
+
+**docker-compose is where all of it comes together in one file.**
+
+#### What is dokcer-compose ?
+
+It's a tool that reads a ``docker-compose.yml`` file and:
+
+* Builds all the images from their Dockerfiles
+* Creates the network
+* Creates the volumes
+* Starts all containers in the right order with the right configuration
+
+Instead of typing 10 ``docker run`` commands with 15 flags each -- one command does everything
+
+``dokcer-compose up --build``
+
+#### The anatomy of a docker-compose.yml
+
+Let's read a simplifed version of what the **Inception** file will look like, section by section
+
+```
+version: '3.8'
+
+services:                                   # The containers
+    ngnix:
+        build: ./requirements/ngnix         # path to Dockerfile
+        container_name: ngnix
+        ports:
+            - "443:443"                     # host:container
+        volumes:
+            -wp_website_files_volume:/var/www/html
+        networks:
+            -inception_network
+        restart: always                     # crash policy
+
+    wordpress:
+        build: ./requirements/wordpress
+        container_name: wordpress
+        volumes:
+            - wp_website_files_volume:/var/www/html
+        networks:
+            - inception_network
+        restart: always
+        depends_on:
+            - mariadb                       # start order
+
+networks:                                   # define the custom network bridge
+    inception_network:
+        driver: bridge
+
+volumes:                                    # declare named volumes
+    wp_database_volume:
+        driver: lovcl
+        driver_opts:
+            type: none
+            o: bind
+            device: /home/<login>/data/mysql
+    wp_webstie_files_volume:
+        driver: local
+        drivre_opts:
+            type: none
+            o: bind
+            device: /home/<login>/data/wordpress
+```
+
+#### Breaking Down The Key Directives
+
+* ``build`` -- points to the directory countaining the Dockerfile, docker-compose builds the image from scratch, no DockerHub
+* ``ports`` -- maps host port to container port via iptable NAT rules we discussed in networking, Only NGNIX exposes a port -- WordPress and MariaDB have no port mapping, they're invisible to the outside world.
+* ``restart: alwasy`` -- tells Docker to restart the container automatically if it crashes, this is how **Inception** satisfies the crash policy requirement, under the hood Docker monitors PID 1 -- if PID 1 exits, Docker restart the container.
+* ``depends_on`` -- controls start order, WordPress depend on MariaDB being up before it starts, NGNIX depends on WordPress.
+* ``networks`` -- every service declares membership in ``inception_network``, this is what enables container name DNS resolution -- ``wordpress`` resolves to the WordPress container's IP automatically.
+* ``volumes`` -- mounts the named volumes into the container at the specified path.
+
