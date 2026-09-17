@@ -505,3 +505,336 @@ volumes:                                    # declare named volumes
 * ``networks`` -- every service declares membership in ``inception_network``, this is what enables container name DNS resolution -- ``wordpress`` resolves to the WordPress container's IP automatically.
 * ``volumes`` -- mounts the named volumes into the container at the specified path.
 
+## Part Four
+
+### Dockerfile Internals -- Every Instruction Explained
+
+A Dockerfile is a **sequential list of instructions** that Docker executes top to bottom to build an image. each instruction creates a new layer.
+
+#### The instructions
+
+``FROM``
+
+```
+FROM debian:bullseye-slim
+```
+
+This is always the first instruction, it defines the **base layer** -- the starting filesystem the image builds on top of.
+
+Every subsequent instruction adds a lyer on top of this base.
+
+This is why inceotion forbids ``:latest``, since it is a floating tag that changes silently, ``bullseye-slim`` is pinned, you know exactly what you're getting every single build.
+
+``slim`` variants strip out unnecessary packages, smaller attack surface, smaller image size.
+
+* ``RUN``
+
+```
+RUN apt-get update && apt-get install -y mariadb-server
+```
+
+Execute a shell command during the build and commits the result as a new layer.
+
+Two critical things:
+
+**Why the use of ``&&`` chaining matters:
+
+```
+# Bad - two seperate layers
+RUN apt-get update
+RUN apt-get install -y mariadb-server
+
+# Good - one layer
+RUN apt-get update && apt-get install -y mariadb-server
+```
+
+Each ``RUN`` is a layer, if we update one layer and install in the next, Docker can cache the update layer and use a stale package list, chain then -- One ``RUN`` layer, always fresh.
+
+``-y`` flag -- auto-confirms prompts, without it the build hangs waiting for user input that never comes.
+
+* ``COPY``
+
+```
+COPY conf/my.cnf /etc/mysql/my.cnf
+```
+
+Copies files from the **build context** (the project directory) into the image layer.
+
+This is how the configuration files get baked into the image -- the custom MariaDB config, NGNIX config, php-fpm config.
+
+* ``ENV``
+
+```
+ENV MYSQL_DATABASE=wordpress
+```
+
+Sets an **envuronment variable** that persists into the running container.
+
+But -- and this is critical for the project, we should never put passwords in ENV inside a Dockerfile, ENV values are baked into the image layer and visible to anyone who runs ``docker inspect`` on the image
+
+```
+docker inspect myimage | grep PASSWORD
+# exposes the password to anyone with Docker access
+```
+
+Secrets come from outside the imgae -- through ``.env`` files and Docker secrets, we will cover that later.
+
+* ``EXPOSE``
+
+```
+EXPOSE 3306
+```
+
+Documents which port the container listens on, that's all it does -- it's metadata, not an actual firewall rule on port mapping.
+
+The actual port publishing happens in ``docker-compose.yml`` with the ``ports:`` directive, EXPOSE is just a signal to whoever reads the Dockerfile.
+
+* ``ENTRYPOINT`` vs ``CMD``
+
+This is where most people get confused -- these two work together and the distinction metters deeply for the PID 1 understanding.
+
+```
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["mysqld"]
+```
+
+``ENTRYPOINT`` -- the executable that always runs, cannot be overridden easily, this is the initialization script.
+
+``CMD`` -- the default argument passed to ENTRYPOINT, can be overridden at runtime.
+
+So the above means: always run ``dokcer-entrypoint.sh``, and pass ``mysqld`` as the argument to it.
+
+The entrypoint script initialize the database, then calls ``exec mysqld`` -- handing off the real MariaDB daemon as PID 1.
+
+Which brings us to the most important rule:
+
+#### The PID 1 Rule -- ``exec`` form vs ``shell`` form
+
+There are two ways to write ENTRYPOINT and CMD:
+
+```
+# shell form -- WRONG for PID 1
+ENTRYPOINT docker-entrypoint.sh
+
+# Exec form -- CORRECT for PID 1
+ENTRYPOINT ["docker-entrypoint.sh"]
+```
+
+**Shell form** spawns ``/bin/sh -c`` as PID 1, which then spawns our process as a child.
+Our actual process is PID 2, singals like ``SIGTERM`` sent to PID 1 never reach our process -- graceful shutdown is impossible.
+**Exec form** runs our process directly as PID 1, signals reach it correctly, this is always what we want.
+
+#### Layer Order -- Why it Matters for Build Speed
+
+```
+FROM debian:bullseye-slim           # changes never -> bottom
+RUN apt-get install -y mariadb      # changes rarely -> early
+COPY conf/my.cnf /etc/mysql/        # changes sometimes -> middle
+COPY tools/entrypoint.sh /          # changes often -> late
+```
+
+Docker caches every layer, if layer 3 changes, layers 1 and 2 are served from cache instantly -- only layers 3 and beyond rebuild
+
+Put stable things early, volatile things late, this is the difference between a 30 second rebuild and a 5 minute rebuild.
+
+***
+### MariaDB Container -- Building the Database Foundation
+
+MariaDB is the first container we build because everything depends on it, WordPress needs a running database before it can do anything, we build bottom up.
+
+#### What the MariaDB Container Needs to Do
+
+Before we write a single line, let's think about what this container is respobsible for:
+
+* Install MariaDB server
+* Initize the database on first run
+* Create the WordPress database
+* Create two users -- one admin, one regular WordPress user
+* Secure the installation
+* Start MariaDB daemon as PID 1
+***
+
+#### The Dockerfile
+
+```
+FROM debian:bullseye-slim
+
+# Install MariaDB
+RUN apt-get update && apt-get install -y mariadb && rm -rf /var/lib/apt/lists/*
+
+# Copy custom MariaDB config
+COPY conf/my.cnf /etc/myswl/my.cnf
+
+# Copy entrypoint script
+COPY tools/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Document the port
+EXPOSE 3306
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["mysqld"]
+```
+
+Note: ``rm -rf /var/lib/apt/lists/*`` -- deletes the package manager cache after installing, this is a layer cleanup technique -- apt downloads package lists to know what's available, we don't need them after installation, removing them shrinks the image layer.
+
+**No Password anywhere** -- the Dockerfile is clean, Creds come from the outside.
+***
+
+#### The Configuration File -- ``conf/my.cnf``
+
+```
+[mysqld]
+user                = mysql
+datadir             = /run/mysqld/
+socket              = /run/mysqld/mysqld.sock
+bind-address        = 0.0.0.0
+port                = 3306
+
+[client]
+socket              = /run/mysqld/mysqld.sock
+```
+
+``bind-address = 0.0.0.0`` -- tells MariaDB to accept connections on all network interfaces inside the container, without this it only listens on localhost -- WordPress couldn't reach it.
+
+``socket`` -- the Unix socket file MariaDB uses for local connections, both ``[mysqld]`` and ``[client]`` must agree on the path.
+***
+
+#### Credentials -- How Secrets Work in Inception
+
+This is where Inception's security model becomes concrete.
+
+We have three files in our ``secrets/`` directory:
+
+```
+secrets/
+-- db_password.txt           <-- WordPress user password
+-- db_root_password.txt      <-- MariaDB root password
+```
+
+in ``dokcer-compose.yml`` we declare them:
+
+```
+secrets:
+    db_password:
+        file: ../secrets/db_password.txt
+    db_root_password:
+        files: ../secrets/db_root_password.txt
+
+services
+    mariadb:
+        secrets:
+            - db_password
+            - db_root_password
+        environment:
+            MYSQL_DATABASE: ${MYSQL_DATABSE}
+            MYSQL_USER: ${MYSQL_USER}
+```
+
+Docker mounts secrets as **files** inside the container at ``/run/secrets/``
+
+```
+/run/secrets/db_password
+/run/secrtes/db_root_password
+```
+
+Our entrypoint script **reads** the password from the file:
+
+```
+DB_PASSWORD=$(cat /run/secrets/db_password)
+```
+
+This means passwords **never exist as environment vairables**, never appear in ``docker inspect``, never get logged, they exist only as files readable by the process that needs them.
+***
+
+#### The Entrypoint Script
+
+This is where everything we've learned comes together, the entrypoint script is the **brain of the container** -- it runs first, sets everything up, then hands control to the real daemon as PID 1.
+
+* What it needs to do :
+
+```
+1. Read credentials from /run/secrets/
+2. Start MariaDb temporarily (for initialization)
+3. Create the datababase
+4. Create the users
+5. Set passwords
+6. Shut down the temporary MariaDB instance
+7. Hand off to the real mysqld as PID 1
+```
+
+#### The Script
+
+```
+#!/bin/sh
+
+# Read credentials from Docker secrets
+DB_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
+DB_PASSWORD=$(cat /run/secrets/db_password)
+
+# Create the socket directory
+mkdir -p /run/mysqld
+chown -R mysql:mysql /run/mysqld
+chown -R mysql:mysql /var/lib/mysql
+
+# Initialize the database directory if first run
+if [ ! -d "/var/lib/mysql/mysql" ]; then
+    mysql_install_db --user=mysql --datadir=/var/lib/mysql
+fi
+
+# Start MariaDB temporarily in background for setup
+mysqld --user=mysql &
+TEMP_PID=$!
+
+# Wait for MariaDB to be ready
+until mysqladmin ping --silent; do
+    sleep 1
+done
+
+# Run setup queries
+mysql -u root << EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${DB_ROOT_PASSWORD}';
+CREATE DATABASE IF NOT EXISTS ${MYSQL_DATABASE};
+CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+GRANT ALL PREVILEGES ON ${MYSQL_DATABASE}.* TO '${MYSQL_USER}'@'%';
+DELETE FROM mysql.user WHERE USER='';
+DROP DATABASE IF EXISTS test;
+FLUSH PREVILEGES;
+EOF
+
+# Shut down the temporary instance
+kill $TEMP_PID
+wait $TEMP_PID
+
+# Hand off to the real daemon as PID 1
+exec "$@"
+```
+
+#### Script -- Step by Step Explanation
+
+* ``#!/bin/sh``
+
+This is a **shebang**, when the kernel executes a script file, it reads the first two bytes, if they're ``#!``, the kernel reads the rest of the line as the interpreter to use, then calls that interpreter with the script as its argument
+
+for example when Docker runs ``/init.sh`` the kernel actually executes ``/bin/sh /init.sh``, and ``/bin/sh`` is chosen over ``/bin/bash`` deliberately -- Alpine Linux doesn't ship bash by default yet ``sh`` is always present, portable scripts use ``sh``.
+***
+
+* Socket Directory Setup
+
+```
+mkdir -p /run/mysql
+chown -R mysql:mysql /run/mysqld
+chown -R mysql:mysql /var/lib/mysql
+```
+
+``mkdir -p /run/mysql`` -- creates the directory if it doesn't exist, ``-p`` means "No error if it already exists, create parent directories as needed."
+
+MariaDB communicates locally via Unix Socket file at ``/run/mysqld/mysqld.sock``, before MariaDB create that file, the directory must exist.
+
+``chown -R mysql:mysql`` -- changes ownership recursively, ``mysql:mysql`` means user ``mysql``, MariaDB runds as the ``mysql`` user (not root) for security -- a compromised MariaDB process should not have root privileges on the container filesystem, but it needs to own its socket directory and data directory to read/write them.
+
+The ``-R`` flag means revursive -- applies to everything inside ``/var/lib/mysql/`` too, where the actual databse files live
+
+**Security Angle**: Running a daemon as a non-root user inside a container is defense in depth, if MariaDb is exploited, the attacker has UID ``mysql`` inside the container -- not root, combined with the mount namespace, they still can't touch the host filesystem.
+
+* First-Run Initialization
