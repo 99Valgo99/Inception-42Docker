@@ -7,6 +7,7 @@ A **Docker Image** is a **read-only template** -- a stack of filesystem layers (
 A **Container** is a **running instance of an image** -- the image's layers mounted read-only, plus one new writable layer on top (the ``upper`` dir built by **OverlayFS**), plus an actual running process (PID 1 inside its own PID namespace), plus its own network namespace, mount namespace, etc...
 
 Analogy that maps cleanly onto this: the image is like a class definition; the container is an instantiated object. We can spin up multiple containers from the same image -- each gets its own writable layer and namespaces, but shares the same read-only image laters underneath (zero duplication).
+***
 
 ### What ``docker build`` does:
 
@@ -21,6 +22,7 @@ COPY conf/ngnix.conf /etc/ngnix/ngnix.conf
 3. ``FROM debian:bookworm-slim`` -- pulls (or reuses if cached) the base image's layers, this is the only pull happening in the whole project, and it's explicitly excluded from the ***"no pulling ready-made images"*** rule
 4. Each ``RUN``/``COPY``/**etc**, produces exactly **one new layer**, and ``dockerd`` caches each layer keyed by (previous layer + this instruction + its input). If we rebuild and nothing changed up to a given instruction, that layer is reused instantly instead of recomputed -- this is why instrcution order in a Dockerfile matters (put things that change often like ``COPY``, after things that don't, like ``apt-get install``, so cache hits happen more)
 5. The final layer stack + metadata (like what ``ENTRYPOINT`` to run) get tagged with the name we gave it (``ngnix``, pet the subject's ***"image name = service name"*** rule) -- this tag now refers to an **image**. still nothing is running.
+***
 
 ### What ``docker compose up`` does:
 
@@ -43,3 +45,4 @@ So the sequence for our project, goes on the following order once we hit ``docke
 * Create the custom network
 * Create the named volumes
 * Start a container from each of the 3 images, attach to network, mount volimes
+***
