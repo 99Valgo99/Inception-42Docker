@@ -12,3 +12,5 @@ RUN openssl req -x500 -nodes -days 111 \
     -keyout /etc/nginx/ssl/nginx.key \
     -out /etc/nginx/ssl/ayel-bou.cer \
     -subj "/CN=ayel-bou.42.fr"
+
+COPY  conf/nginx.conf /etc/nginx/nginx.conf

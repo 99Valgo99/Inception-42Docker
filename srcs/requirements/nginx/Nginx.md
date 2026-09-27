@@ -138,4 +138,19 @@ RUN openssl req -x500 -nodes -days 111 \
 * ``-out /etc/nginx/ssl/ayel-bou.cer`` -- where the generated **certificate** (containing the public key + identity clain, self-signed) gets written. This one is meant to be sent to clients during the TLS handshake.
 
 * ``-subj`` "/CN=ayel-bou.42.fr" -- normally ``openssl req`` would interactively prompt us for a bunch of identity fields (country, organization, etc...) to embed in the cerificate. ``-subj`` supplies them non-interactively (required -- nobody's sitting at the CLI during ``docker build``), and we are only setting ``CN`` (Common Name) -- the field that states which domain this cert claims to represent. This match our actual domain, because that's what a client's TLS library checks against the URL it's connecting to.
+***
+
+```
+COPY conf/nginx.conf /etc/nginx/nginx.conf
+```
+
+#### Why we need to copy this
+
+``apt-get install nginx`` already dropped a **default** ``nginx.conf`` at /etc/nginx/nginx.conf``. That default config is generic -- it does not know about TLSv1.2/1.3 restiction, doesnt know about our cert paths, doesnt know it needs to talk to a php-fpm container. We need to replace it **entirely** with out own driected config file.
+
+``COPY <source> <destination>`` takes a file from the **build context** (Same directory where the Dockerfile is being built from) and places it at the given path inside the image.
+
+#### Why this exact path where we copy
+
+``etc/nginx/nginx.conf`` is the exact path NGINX own binary looks for by default when it starts -- this isnt out choice, it's baked into how the ``nginx`` package is compiled/configured on Debian. By overwritting the file at that exact path, we don't need to pass any special flag telling NGINX ***"user this config instead"*** -- it just is the config.
 
