@@ -13,6 +13,6 @@ RUN openssl req -x500 -nodes -days 111 \
     -out /etc/nginx/ssl/ayel-bou.cer \
     -subj "/CN=ayel-bou.42.fr"
 
-COPY  conf/nginx.conf /etc/nginx/nginx.conf
+COPY  conf/nginx.conf /etc/nginx/conf.d/extended.conf
 
 ENTRYPOINT ["nginx", "-g", "daemon off;"]

@@ -141,7 +141,7 @@ RUN openssl req -x500 -nodes -days 111 \
 ***
 
 ```
-COPY conf/nginx.conf /etc/nginx/nginx.conf
+COPY conf/nginx.conf /etc/nginx/conf.d/extended.conf
 ```
 
 #### Why we need to copy this
@@ -152,7 +152,19 @@ COPY conf/nginx.conf /etc/nginx/nginx.conf
 
 #### Why this exact path where we copy
 
-``etc/nginx/nginx.conf`` is the exact path NGINX own binary looks for by default when it starts -- this isnt out choice, it's baked into how the ``nginx`` package is compiled/configured on Debian. By overwritting the file at that exact path, we don't need to pass any special flag telling NGINX ***"user this config instead"*** -- it just is the config.
+This is NGINX's own built-in mechanims for omdular configuration -- **any file matching ``*.conf`` inside ``/etc/nginx/conf.d`` gets autmatically read and merged into this ``http {}`` scope** at startup, as if we'd pasted its contents directly there. We are not inventing this behavior; we're relying on a mechanism the package already ships with and already wires up.
+
+NGINX is already organized as **nested blocks**, each scoping the directives inside it to a specific layer of responsibilty:
+
+* **Main/global scope** (top of the file, outside any ``{}``) --process-wide settings: how many worker processses to run, which user NGINX runs as, where the PID file lives, where to send error logs.
+
+* ``events {}`` -- connection-handling behavior for worker processes (max connections per worker, which OS-level event mechanism to use -- epoll on Linux...)
+
+* ``http {}`` -- everything related to serving HTTP/HTTPS. This also where we will typically find an ``include /etc/nginx/conf.d/extended.conf;`` line -- this is the hook that lets us drop in extra config files without touching the main file.
+
+* ``server {}`` (nested inside ``http{}``) -- one virtual host: a domain + port + how to handle its requests. This is what we will actually write ourselves in the ``extended.conf``.
+
+* ``location {}`` (nested inside ``server{}``) -- rules for specific URL paths within that server.
 ***
 
 ```
