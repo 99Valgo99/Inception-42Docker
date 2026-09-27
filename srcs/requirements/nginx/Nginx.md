@@ -146,11 +146,68 @@ COPY conf/nginx.conf /etc/nginx/nginx.conf
 
 #### Why we need to copy this
 
-``apt-get install nginx`` already dropped a **default** ``nginx.conf`` at /etc/nginx/nginx.conf``. That default config is generic -- it does not know about TLSv1.2/1.3 restiction, doesnt know about our cert paths, doesnt know it needs to talk to a php-fpm container. We need to replace it **entirely** with out own driected config file.
+``apt-get install nginx`` already dropped a **default** ``nginx.conf`` at ``/etc/nginx/nginx.conf``. That default config is generic -- it does not know about TLSv1.2/1.3 restiction, doesnt know about our cert paths, doesnt know it needs to talk to a php-fpm container. We need to replace it **entirely** with out own driected config file.
 
 ``COPY <source> <destination>`` takes a file from the **build context** (Same directory where the Dockerfile is being built from) and places it at the given path inside the image.
 
 #### Why this exact path where we copy
 
 ``etc/nginx/nginx.conf`` is the exact path NGINX own binary looks for by default when it starts -- this isnt out choice, it's baked into how the ``nginx`` package is compiled/configured on Debian. By overwritting the file at that exact path, we don't need to pass any special flag telling NGINX ***"user this config instead"*** -- it just is the config.
+***
 
+```
+EXPOSE 443
+```
+
+``EXPOSE`` is **purely documentation/metadata``. it does not open a port, does not publish anything, does notmake the container reachable from outside in any way by itself. It gets baked into the image's metadata as a note that says essentially "***this container, when run, expects to listen on port 443***".
+
+The actual thing that makes a port reachable from outside the container is the ``ports:`` mapping in ``docker-compose.yml`` -- something as:
+
+```
+ports:
+    - "443:443"
+```
+***
+
+```
+ENTRYPOINT ["nginx", "-g", "daemon off;"]
+```
+
+``ENTRYPOINT`` vs ``CMD`` -- both can specify what runs when the container starts, but ``ENTRYPOINT`` is meant for specificing exactly what the container is meant for, while ``CMD`` is more like "default arguments, easiy overridden" since this container has one job -- be an NGINX server, always -- ``ENTRYPOINT`` is the semantically correct choice. There's no scenario where we'd want to swap out what this containre runs at ``docker run`` time.
+
+examples:
+
+```
+# Dockerfile
+
+FROM python:3.9
+ENTRYPOINT ["python", "app.py"]
+CMD ["--port", "8080"]
+
+# Running it normally
+
+docker run my-image | (runs as docker run my-image --port 8080)
+
+# Changing the argument
+dokcer run my-image --port 1111
+
+# Case of Entrypoint
+dokcer run --entrypoint bin/newscript.sh my-image
+```
+
+**The array/JSON** form ``["nginx", "-g", "daemon off;"]`` vs **a plain string form** -- this is called **exec form** vs **shell form**. Exec form (array of strings) runs the command directly as **PID 1**m with no intermediate shell process.
+
+Shell form: ``ENTRYPOINT nginx -g "daemon off;"``, no brackets; would actually run ``/bin/sh -c "nginx -g 'daemon off;'`` -- meaning the **shell process becomes PID 1**, not NGINX. That matter a lot: signals like ``SIGTERM`` (what ``docker stop`` sends) go to PID 1, if a shell is PID 1, it may not forward that signal properly to the actual NGINX process running underneath it -- leading to our container failling to shut down cleanly, or ``docker stop`` timing out and force-killing it.
+Exec form avoids this problem entirely by making NGINX itself PID 1, directly receiving signals.
+
+#### Why ``-g "daemon off;" ?
+
+NGINX's **default behavior**, if started plain (``nginx`` with no flags), is to **daemonize** -- fork itself into a background process and have the original foreground process exit immediarely. In normal Linux system, that's totally fine, because some other process (**systemd, int**) is going to keep running regardless.
+
+But inside a container, **the container's lifetime is defined by PID 1's lifetime**.
+If NGINX daemonizes, the original PID 1 process exits right after forking -- and the moment PID 1 exits, Docker considers the container's job done and kills it, even though a background NGINX worker still exists for a split second. Our container would immediately stop right after starting.
+
+``-g "daemon off;"`` overrides this:
+
+NGINX runs in the **foreground**, directly as PID 1, never forking away, just...running, serving requests, forever (until stopped).
+This is precisely the subject state "***read about PID 1 and best practices for writing Dockerfiles***", and precisely why ``tail -f``/``sleep infinity``/``while true`` are banned -- those are hacky ways of keeping omse process alive as PID 1 when our actual application already daemonizes itself, instead of properly configuring the application to just not daemonize, and be the real, correct PID 1.
