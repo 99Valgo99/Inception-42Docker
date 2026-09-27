@@ -211,3 +211,26 @@ If NGINX daemonizes, the original PID 1 process exits right after forking -- and
 
 NGINX runs in the **foreground**, directly as PID 1, never forking away, just...running, serving requests, forever (until stopped).
 This is precisely the subject state "***read about PID 1 and best practices for writing Dockerfiles***", and precisely why ``tail -f``/``sleep infinity``/``while true`` are banned -- those are hacky ways of keeping omse process alive as PID 1 when our actual application already daemonizes itself, instead of properly configuring the application to just not daemonize, and be the real, correct PID 1.
+
+## Q&A
+
+### Why does NGINX fork itself in the first place ?
+
+In Normal OS -- when we type ``nginx`` we get our CLI back instantly, and NGINX just quietly keeps running in the background, supervised by ``init``/systemd like any other daemon. 
+NGINX (and countless other dameons -- apache, mysqld, sshd...) all default to this behavior because it was written for that world, not for containers. It's not NGINX being weird -- it's NGINX following 40+ years of Unix daemon convention.
+***
+
+### Why does PID 1 shut down once that forking happens ?
+
+**A container is considered "running" for exactly as long as its PID 1 process is alive**. The moment PID 1's process exits -- for any reason, whether it crashed or exited cleanly on purpose -- Docker tears down the whole container, no exceptions, no "***but there's still a child process alive***" consideration.
+
+So when NGINX's default behavior runs inside a container: NGINX starts as PID 1 -> NGINX forks a background worker (this is the "daemonize" step) -> the original NGINX process, which was PID 1, has now finished its job (it spawned the daemon real working process) and exits as it should -> Docker sees PID 1 died -> container shuts down immediately, **even though a child NGINX worker process might technically still be alive for a brief moment** -- it doesn't matter, Docker isn't tracking that child, it only watches PID 1.
+***
+
+### Why do hacky patches like ``tail -f`` or ``sleep infinity`` "***work around***" this ?
+
+the trick is to spawn a command as PID 1, whose only purpose is to never exit -- ``tail -f /dev/null``, ``sleep infinity``, `` while true; do sleep 1; done``.
+
+These commands do nothing useful; their entire purpose is just "***be a process that never terminates***", so Docker sees some PID 1 still alive and keeps the container running, while NGINX real worker process happens to also still be alive in the background, doing the actual work.
+
+We now have a PID 1, that has nothing to do with our actual application. It doesn't know if NGINX crashed. It doesn't reap zomebie processes properly. If NGINX worker process dies for any reason, ``tail -f`` keeps happily running forever, and Docker has no idea anything went wrong -- our container looks "healthy" and "running" while the actual service inside it is dead. That's a broken, unobservable failure mode entrirely caused by using a fake, disconnected PID 1.
