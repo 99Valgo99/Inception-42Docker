@@ -98,4 +98,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx openssl &
 * Why ``update`` and ``install`` are chained with && in one ``RUN`` -- This is the point of **Caching**, Docker caches each ``RUN`` as a layer keyed on the instruction text. If ``apt-get update`` were its own seperate ``RUN`` layer, a rebuild days later could reuse that stale cached layer (with an outdated package index) while still running a fresh ``install` against it -- silently installing older/wrong package versions that what's actually current. Chaining them forces both to always execute together as one atomic unit, so the index is always feshly matched to the install step
 
 * ``rm -rf /var/lib/apt/lists/*`` in the same instruction -- after ``apt-get update``, Debian caches the downloaded package index files on dick. They are only useful during the install itself; keeping them afterward just waste image space. Doing the cleanup in the same ``RUN`` (not a later one) means thise files never get commited into a seperate layer at all -- if we deleted them in a later ``RUN``, the earlier layer still physically caontains them.
+***
+```
+RUN mkdir /etc/nginx/ssl
+```
+
+We are about to generate a TLS certificate and its matching private key. Those two files need to live somewhere predictable inside the image filesystem so that our ``nginx.conf`` can point to them with directives like
+
+```
+# Nginx config file
+
+ssl_certificate /etc/nginx/ssl/nginx.cet;
+ssl_certificate_key /etc/nginx/ssl/nginx.key;
+```
+
+The path being used (``/etc/nginx/*``) is not a hardcoded requirement by the subject, it's a **convention**, its where NGINX's own package puts its default config (``/etc/nginx/nginx.conf``), so keeping cert-related files in a ``ssl/`` subfolder right next to it; is a common, readable pattern: anyone looking at the image immediately knows where to find NGINX-related secruity material. We can actually put it anywhere we want, however what matters is that the path here matches exactly what we reference later in ``nginx.conf``.
+***
+
+```
+RUN openssl req -x500 -nodes -days 111 \
+    -newkey rsa:2048 \
+    -keyout /etc/nginx/ssl/nginx.key \
+    -out /etc/nginx/ssl/ayel-bou.cer \
+    -subj "/CN=xoris.42.fr"
+```
+
+* ``req`` -- the OpenSSL responsible for creating/managing **certificate requests**. Normally, in the real CA-signed world, this command generates a CSR (**Certificate Signing Request**) -- a file we'd send to a CA, who signs it and hands back a real certificate.
+
+* ``-x509`` -- this flag tells ``openssl req`` to skip the CSR step entrirely and instead directly output a **self-signed certificate**. This is the flag that makes "***self-signed***" actually happen, without it we will get a CSR file with no body to sign it.
+
+* ``-nodes`` -- stands for "No DES" (historically referred to a specific cipher), but in practice it means: **don't encrypt the private key file with a passphrase**. If we omitted this, ths generated private key would be password-protected, and NGINX would need that password entered every time it starts -- impossible for an automated, non-interactive container boot. Since the key file itself sits inside the image (protected by normal filesystem permissions) skipping encryption here is the correct call for this use case.
+
+* ``-day 111`` -- how long the certifcate stays valid, in days. After this, clients would reject it as expired. A year is a reasonable, arbitrary choice for a project like this.
+
+* ``-newkey rsa:2048`` -- this is doing two things in one flag: (1) generate a **new private key** rather than reusing an existing one, and (2) specifies it should be an **RSA key, 2048 bits long** -- this is the actual public/private keypair. 2048-bit Rsa is the standard minimum considered secure today (smaller, like 1024-bit, is considered breakable with enough compute, larger, like 4096-bit, is safer but slower -- 2048 is the practical middle ground almost everyone uses).
+
+* ``-keyout /etc/nginx/ssl/nginx.key`` -- where the generated private key gets written. This file must never leave this container/never be exposed -- it's the secret half of the keypair.
+
+* ``-out /etc/nginx/ssl/ayel-bou.cer`` -- where the generated **certificate** (containing the public key + identity clain, self-signed) gets written. This one is meant to be sent to clients during the TLS handshake.
+
+* ``-subj`` "/CN=ayel-bou.42.fr" -- normally ``openssl req`` would interactively prompt us for a bunch of identity fields (country, organization, etc...) to embed in the cerificate. ``-subj`` supplies them non-interactively (required -- nobody's sitting at the CLI during ``docker build``), and we are only setting ``CN`` (Common Name) -- the field that states which domain this cert claims to represent. This match our actual domain, because that's what a client's TLS library checks against the URL it's connecting to.
 
