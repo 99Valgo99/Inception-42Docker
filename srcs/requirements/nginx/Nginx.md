@@ -10,6 +10,7 @@ A plain web server serves files directly: request comes in for ``/index.html``, 
 
 A **reverse proxy** sits in front of other servers/processes and forwards requests to them on the client's behalf, then relays the response back -- the client only ever talks to the proxy, never directly to whatever's actually doing the work behind it.
 "Reverse" (as opposed to a regular/forward proxy) because it's ying on behalf of the server side, hiding backend infrastructure from the client, not proxying outbound request on behalf of a client
+***
 
 #### Why NGINX specifically has this role in inception
 
@@ -23,6 +24,7 @@ So NGINX job here is:
 3. Take php-fpm's response and relay it back to the actual browser over the TLS connection
 
 This is why the subject insists ***"NGINX must be the only entrypoint"*** -- it's real security architecture pattern, not arbitraty rule. Our database and application logic are never directly reachable from the internet; only the hardened, TLS-terminating proxy is. If someone attacks our infra from the outside, they only ever get to talk to NGINX.
+***
 
 #### Where NGINX's config comes in
 
@@ -34,6 +36,7 @@ ssl_protocols TLSv1.2 TLSv1.3;
 ```
 
 **Mental Model** to hold: **NGINX is a gatekeeper + traffic router**, not the thing that generates the WordPress page content -- php-fpm/WordPress does that; NGINX decides whether and how to get a request there, and enforces the TLS boundary on the way in
+***
 
 ### TLS - Transport Layer Security
 
@@ -62,4 +65,37 @@ A certificate is a file containing: a **public key**, an **identity claim** (***
 #### Why do we use a self-signed certificate here
 
 Normally a CA (like ``Let's Encrypt``) signs our cert after verifying we actually control that domain. But ``login.42.fr`` isn't a real, internet-routable domain -- it's fake entry we are adding to ``/etc/hosts`` pointing to our local machine. No real CA would ever sign a cert for a domain like that. So instead, **we generate a cerificate and sign it ourselves** (via ``openssl``), which cryptographically still does the encryption/tamer-evidence job perfectly -- it just fails the CA part, which is why our browser will show a ***"Not Trusted"*** warning. That's expected and fine for this project; it's not a real production deployment reachable by the the public internet.
+***
+
+### NGINX Dockerfile
+
+```
+FROM debian:bookworm-slim
+```
+
+``debian`` -- the official Debian image, maintained by Debian project itself and published on Docker Hub (***Docker Hub is a cloud-hosted registry service provided by Docker that enables you to find, share, and manage container images***), this is the one pull allowed by the subject (Base OS images are explicitly excluded from the rule of not pulling ready-made images).
+
+``bookworm`` -- this is the codename for Debian 12, the current stable release as of now. Debian names releases after Toy Story characters (Bookworm, bulleye, Buster...).
+Using the codename instead of a generic tag, pings us to a specific, knwon release -- its package versions, its behavior, security patch, if Debian releases Debian 13 by tomorrow, an image tagged ``bookworm`` doesn't silently change underneath.
+
+``--slim`` -- a variant of the image with non-essential packages stipped out (docs, some locale files...) -- smaller image size, smaller attack surface, since we are installing exactly what we need ourselves anyway (nginx, openssl) rather than relying on a fuller base.
+
+#### Why not ``debian:latest``
+
+``latest`` is a **moving target**. It typically points to whatever the newest stable release is at pull time, so a build today and a build six months from now could silently resolve to enirely different Debian versions, with different package behavior. That breaks reproducibility, which is the whole point of pinning a version in the first place.
+***
+
+```
+RUN apt-get update && apt-get install -y --no-install-recommends nginx openssl && rm -rf /var/lib/apt/lists/*
+```
+
+* ``apt-get update`` -- refeshes the local package index (the list of what packages/versions are available and from where URLs) inside the image. Debian base images don't ship with a pre-populated fresh index, so this always needs to run before installing anything.
+
+* ``apt-get install -y nginx openssl`` -- installs the two packages we actually need: ``nginx`` (the web server itself) and ``openssl`` (the toolkit we will use to generate the self-signed cert).
+
+* ``--no-install-recommends`` -- apt distinguishes between **"depends"** (mandatory requirments) and **"recommends"** (extra packages that are often useful but not strictly necessary). This flag skips the recommends tier, keeping the image leaner -- nginx doesn't need much beyond its hard dependencies to function correctly.
+
+* Why ``update`` and ``install`` are chained with && in one ``RUN`` -- This is the point of **Caching**, Docker caches each ``RUN`` as a layer keyed on the instruction text. If ``apt-get update`` were its own seperate ``RUN`` layer, a rebuild days later could reuse that stale cached layer (with an outdated package index) while still running a fresh ``install` against it -- silently installing older/wrong package versions that what's actually current. Chaining them forces both to always execute together as one atomic unit, so the index is always feshly matched to the install step
+
+* ``rm -rf /var/lib/apt/lists/*`` in the same instruction -- after ``apt-get update``, Debian caches the downloaded package index files on dick. They are only useful during the install itself; keeping them afterward just waste image space. Doing the cleanup in the same ``RUN`` (not a later one) means thise files never get commited into a seperate layer at all -- if we deleted them in a later ``RUN``, the earlier layer still physically caontains them.
 
