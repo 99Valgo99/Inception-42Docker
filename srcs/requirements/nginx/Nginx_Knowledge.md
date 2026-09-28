@@ -197,7 +197,6 @@ ENTRYPOINT ["python", "app.py"]
 CMD ["--port", "8080"]
 
 # Running it normally
-
 docker run my-image | (runs as docker run my-image --port 8080)
 
 # Changing the argument
@@ -246,3 +245,39 @@ the trick is to spawn a command as PID 1, whose only purpose is to never exit --
 These commands do nothing useful; their entire purpose is just "***be a process that never terminates***", so Docker sees some PID 1 still alive and keeps the container running, while NGINX real worker process happens to also still be alive in the background, doing the actual work.
 
 We now have a PID 1, that has nothing to do with our actual application. It doesn't know if NGINX crashed. It doesn't reap zomebie processes properly. If NGINX worker process dies for any reason, ``tail -f`` keeps happily running forever, and Docker has no idea anything went wrong -- our container looks "healthy" and "running" while the actual service inside it is dead. That's a broken, unobservable failure mode entrirely caused by using a fake, disconnected PID 1.
+***
+
+### NGINX Configuration (extended)
+
+```
+server
+{
+    listen 443 ssl;
+    server_name ayel-bou.42.fr
+
+    ssl_certificate /etc/nginx/ssl/ayel-bou.ser
+    ssl_certificate_key /etc/nginx/ssl/nginx.key
+    ssl_protocols   TLSv1.2 TLSv1.3
+
+    root /var/www/html
+    index index.html
+
+    location /
+    {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+* ``listen 443 ssl;`` -- sole entrypoint, TLS-wrapped & port 443
+
+* ``server_name ayel-bou.42.fr`` -- matches our ``Host`` header;
+
+* ``ssl_certificate``/``ssl_certificate_key`` -- point to the cert/key baked in during Dockerfile's ``openssl req`` step
+
+* ``ssl_protocols TLSv1.2 TLSv1.3`` -- telling NGINX to enforce TLS Versions 1.2/1.3 as its TLS protocols
+
+* ``root /var/www/html;`` -- where NGINX looks for static files.
+
+* ``index index.html`` -- default file server for directory requests.
+
+* ``location / { try_files $uri $uri/ =404; } -- serve static file if present, else 404.
