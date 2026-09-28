@@ -46,3 +46,25 @@ So the sequence for our project, goes on the following order once we hit ``docke
 * Create the named volumes
 * Start a container from each of the 3 images, attach to network, mount volimes
 ***
+
+### Docker Compose
+
+```
+services:
+    service_name:
+        container_name: service_name
+        build: ./path
+        image: servive_name:1.0
+```
+
+* ``services:`` is the top-level key. Everything under it is one service, and each service becomes one container. Later ``mariadb`` and ``wordpress`` will sit next to ``nginx`` at this same level.
+
+* ``service_name:`` is the service name. It has two jobs:
+
+> the subject requires each image to have the same name as its service, and Compose registers the service name as a **DNS Hostname** on the Docker network. This is how WordPress will reach ``mariadb`` by name.
+
+* ``build: ./path`` is the build context. The path is relative to the compose file's location (``srcs/``), so it resolves to ``srcs/requirements/nginx``. Compose sends that folder to ``dockerd`` and finds the ``Dockerfile`` inside it by default, with no extra flag needed. Then Compose runs ``docker build``.
+
+* ``image: service_name:1.0`` names and tags the image Compose builds. Without this line, Compose auto-names it something like ``srcs-service_name``, which breaks the same-name rule. The explicit tag matters too, otherwise without it it will be implicitly tagged ``latest``, and ``docker images`` would then show ``nginx:latest``, which based on the subject is banned.
+
+* ``container_name: service_name`` it sets the name Docker gives the running container, so we can refer to it by name we chose in CLI as: ``docker exec -it service_name sh``, ``docker logs service_name`` or ``docker stop service_name``. Without it, Compose will generate a name from the project folder and service something as ``srcs-service_name-1``.
