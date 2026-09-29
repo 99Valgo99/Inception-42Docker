@@ -81,3 +81,34 @@ networks:
 
 * ``netowkrs:`` **inside the service** attaches that container to it. any other container that uses the same name, attaches itself into the same network, and the services can resolve each other by ``service_name``
 
+## Makefile
+
+```
+all: up
+
+up: docker compose -f srcs/docker-compose.yml up --build
+
+down: docker compose -f srcs/docker-compose.yml down
+
+clean: down
+
+fclean: down
+    docker system prune -af
+
+re: fclean up
+
+.PHOMY: all up down clean fclean re
+```
+
+``-f srcs/docker-compose.yml`` -- tells Docker Compose exactly which file to use, since the Makefile sits at the repo root while the compose file lives at ``srcs/`` without the -f, Compose looks for the compose file in the root directory.
+
+``--build`` on ``up`` -- forces Compose to rebuild images before starting rather than silently reusing a stale cached image if we have edited a Dockerfile since the last run. Without it, ``up`` will happily start a container from an old image, and we could sit there confused why our changes aren't showing up.
+
+``down`` -- stops and remove the containers and the network, but not volumes or images by default. That's the correct "***give me a clean slate to restart***" step fro iterating during development.
+
+``fclean`` -- goes further, after tearing down, ``docker system prune -af`` removes all stopped containers, unused networks, and **all images not currently used by a container** (``-a`` includes images with no container at all. ``-f`` skips the confirmation prompt). This is a destructive command -- it prunes Docker-wide on our machine.
+
+``re`` -- full rebuild from scratch: tear everything down, then bring it back up new.
+
+``.PHONY`` -- tells ``make`` that these target names aren't actual files on disk. Without this, if a file literally named ``clean`` or ``up`` even existed in our repo root, ``make`` could get confused about wheter the target is "up to date" and skip running it. Doesnt affect functionality, but worth checking.
+
