@@ -47,7 +47,7 @@ So the sequence for our project, goes on the following order once we hit ``docke
 * Start a container from each of the 3 images, attach to network, mount volimes
 ***
 
-### Docker Compose
+## Docker Compose
 
 ```
 services:
@@ -55,6 +55,12 @@ services:
         container_name: service_name
         build: ./path
         image: servive_name:1.0
+        ports:
+            - "portN:portN"
+        networks:
+            - inception
+networks:
+    inception:
 ```
 
 * ``services:`` is the top-level key. Everything under it is one service, and each service becomes one container. Later ``mariadb`` and ``wordpress`` will sit next to ``nginx`` at this same level.
@@ -68,3 +74,10 @@ services:
 * ``image: service_name:1.0`` names and tags the image Compose builds. Without this line, Compose auto-names it something like ``srcs-service_name``, which breaks the same-name rule. The explicit tag matters too, otherwise without it it will be implicitly tagged ``latest``, and ``docker images`` would then show ``nginx:latest``, which based on the subject is banned.
 
 * ``container_name: service_name`` it sets the name Docker gives the running container, so we can refer to it by name we chose in CLI as: ``docker exec -it service_name sh``, ``docker logs service_name`` or ``docker stop service_name``. Without it, Compose will generate a name from the project folder and service something as ``srcs-service_name-1``.
+
+* ``ports: "portN:portN"`` the format is ``HOST:CONTAINER``, the left number is the port on our Host Machine, the right number is the port inside the container. Traffic hitting the host on 443 gets forwarded to the container's 443, where NGINX is listening. ``EXPOSE`` in the nginx Dockerfile was merely a documetnation, meanwhile ``ports:`` is what enforces it. we use quotes around the ``"port:port"`` because YAML can interpret unquoted numbers ``xx:yy`` as base-60 numbers in some edge cases, Compose doces recommend always quoting port mappings
+
+* ``networks:`` **at the top level** declares the network itself. ``inception:`` is just the name we are giving it, what we will see when we do ``docker network ls``
+
+* ``netowkrs:`` **inside the service** attaches that container to it. any other container that uses the same name, attaches itself into the same network, and the services can resolve each other by ``service_name``
+

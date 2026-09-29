@@ -1,0 +1,12 @@
+services:
+  nginx:
+    container_name: nginx
+    build: ./requirements/nginx
+    image: nginx:1.0
+    ports:
+      - "443:443"
+    networls:
+      inception
+
+networks:
+  inception:
