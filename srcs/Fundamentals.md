@@ -106,9 +106,40 @@ re: fclean up
 
 ``down`` -- stops and remove the containers and the network, but not volumes or images by default. That's the correct "***give me a clean slate to restart***" step fro iterating during development.
 
-``fclean`` -- goes further, after tearing down, ``docker system prune -af`` removes all stopped containers, unused networks, and **all images not currently used by a container** (``-a`` includes images with no container at all. ``-f`` skips the confirmation prompt). This is a destructive command -- it prunes Docker-wide on our machine.
+``fclean`` -- goes further, after tearing down, ``docker system prune -af`` removes all stopped containers, unused networks, and **all images not currently used by a container** (``-a`` includes images with no container at all. ``-f`` skips the confirmation prompt). This is a destructive command -- it prunes Docker-wide on our machine, for each container the image its built upon gets an ID Hash, so prune checks for the image ID if its referenced in the container object, if not it gets deleted, same goes for the network, the network has an ID, if any container is referenced in it, it does not get deleted until that container is down.
 
 ``re`` -- full rebuild from scratch: tear everything down, then bring it back up new.
 
 ``.PHONY`` -- tells ``make`` that these target names aren't actual files on disk. Without this, if a file literally named ``clean`` or ``up`` even existed in our repo root, ``make`` could get confused about wheter the target is "up to date" and skip running it. Doesnt affect functionality, but worth checking.
+***
+### How DNS Resolution works -- How its linked to ``/etc/hosts``
 
+#### DNS resolution:
+
+When we want to access a website through the browser the following chain occurs:
+
+1. **Browser checks its own cache** -- has it resolved this domain lately ? if yes, skip everything below and reuse that IP
+2. **OS-Level resolver gets asked** -- the browser hands the lookup to the OS networking stack
+3. **The OS checks a local hosts file first** -- before ever going out to the network. This is ``/etc/hosts`` on Linux/MacOS (``C:\Windows\System32\drivers\etc\hosts`` on Windows). This file is literally a static, manually-editable list of ``IP <------> domain`` pairs -- the oldest, simpliest form of resoltion, predating DNS itself.
+4. **Only if there's no match in ``/etc/hosts`` does the OS actually go out over the network -- asking a configuered DNS resolver (often router..), which recursively queries root servers -> TLD servers -> authoritative servers for that domain, eventually getting back an IP address.
+5. That IP gets returned to the browser, which then opens a TCP connection to it.
+***
+
+#### Where ``/etc/hosts`` fits in -- and why it short-cirtuits everything
+
+``/etc/hosts`` sits at **step 3 above**, checked before any real DNS query is even attempted. If our entry is there, resolution **stops immediately** the OS never contacts a DNS server at all for that domain. This is previsely why it works for ``ayel-bou.42.fr``, a domain that doesn't exist anywhere in real, public DNS: our machine never even tries ask the internet about it, because it find a local answer first and stops looking.
+
+An entry looks like:
+
+```
+127.0.0.1       ayel-bou.42.fr
+```
+
+1. we type ``https://ayel-bou.42.fr`` into the browser.
+2. Browser asks the OS to resolve ``ayel-bou.42.fr``.
+3. OS reads ``/etc/hosts``, finds our line, returns ``127.0.0.1`` immediately -- no real DNS involved at all.
+4. Browser now has an IP. it opens a TCP connection to ``127.0.0.1:443`` (443 because of ``https://``)
+5. Docker's iptables rules intercept traffic hitting the host on 443 and forward it (DNAT) into the NGINX container's own 443.
+6. NGINX receives the TCP connection, and the TLS handshake begins -- Client hello, NGINX responds with its cert, etc...
+7. Once the handshake completes. NGINX reads the actual HTTP request, checks the ``Host`` header against ``server_name ayel-bou.42.fr;`` in our config -- since it matches -- serves the response from that ``server {}`` block.
+***
