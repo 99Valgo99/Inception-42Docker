@@ -5,8 +5,8 @@ services:
     image: nginx:1.0
     ports:
       - "443:443"
-    networls:
-      inception
+    networks:
+      - inception
 
 networks:
   inception:
