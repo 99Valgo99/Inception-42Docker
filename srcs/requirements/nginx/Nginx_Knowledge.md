@@ -1,5 +1,8 @@
 ## Nginx
 
+![Logo](../../../Img/Nginx.png)
+***
+
 ### What NGINX actually is
 
 NGINX is a **web server** -- a program whose job is to accept incoming network connections (usually HTTP/HTTPS) and respond to them. But it's more specifically known as a **reverse proxy** in setups like this one, and that distinction matters for understanding why it's in our architecture at all.
