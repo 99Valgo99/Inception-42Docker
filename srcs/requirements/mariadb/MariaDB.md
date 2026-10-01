@@ -40,9 +40,10 @@ MariaDB's authenitcation/authorization system revolves around three things: **wh
 #### User identity is actually ``user@host``, not just a username
 
 In MySQL/MariaDB, a "user" isn't just a username string -- it's a **combination of username AND the host they're connecting from.
-``wp_user@'172.18.0.3' and ``wp_user@'localhost'`` are treated as two **completely seperate accounts**, even with the identical username, potentially with different password and different rpivileges. the ``%` character is a wildcard, meaning "***any host***" -- so ``wp+user@'%'`` means that username con connect from anywhere.
+``wp_user@'172.18.0.3'`` and ``wp_user@'localhost'`` are treated as two **completely seperate accounts**, even with the identical username, potentially with different password and different rpivileges. the ``%` character is a wildcard, meaning "***any host***" -- so ``wp+user@'%'`` means that username con connect from anywhere.
 
 WordPress's container connects to MariaDB over the Docker network, not from ``localhost`` inside the MariaDB container itself. So when we create the WordPRess DB user, we need to grant it access from the right host pattern -- typically ``%`` (any host) or more precisely the Docker network's subnet, since the actual source IP will be whatever address WordPRess's container gets assigned on the ``inception`` network, not something fixed can predict in advance. We will use ``%`` practically, accepting the minor broadening since DB isnt reachable from outside the network anyway.
+***
 
 #### Privileges -- what "***grants***" actually control
 
@@ -64,13 +65,13 @@ This maps onto two different roles that exist at two different layers:
 * The **WordPress-level application user** -- this is a login account, for the WordPress **website's own admin panel** (``/wp-admin``), completely separate from databse authentication. This is the one with **admin/administrator username restiction** --  it's a WordPress application-layer account, not a MariaDB account.
 
 Thus "two users" in the subject's wording actually spans these two different layers -- re-reading the subject's phrasing, the practical requirement is: Our WordPress database needs **two dstinct DB-level accounts** (this is MariaDB's job), and sparately, among WordPress's **own application-level account**. One must be an administrator with a compliant (non-admin-pattern) username.
+***
 
 #### Root user -- the other critical account
 
 MariaDB also has a built-in **root** superuser with unrestricted privileges across the entire server -- this is set via seperate root password (our ``sevrets/db_root_password.txt`` from the subject's example structure), distinct from the WordPress-specific user's password (``secrets/db_password.txt``). Root should never be what WordPress connects as -- WrodPress gets its own scoped-down user precisely so a compromise doesn't hand over full database server control
-***
 
-### MariaDB Dockerfile
+## MariaDB Dockerfile
 
 ```
 RUN apt-get update && apt-get install --no-install-recommends mariadb-server && rm -rf /var/lib/apt/lists/*
@@ -85,3 +86,42 @@ On Debian, ``mariadb-server`` is the package that actually gives us the **server
 #### What's different from NGINX's install, conceptually
 
 NGINX's package, once installed, is basically "***ready to run***" -- it has sensible defaults and just needs a config pointed at a cert. MariaDB's package is **not** ready to run out of the box in the same way: installing the package gives us the binary and default config, but the actual database (the physical files representing a working, initialized MariaDB instance -- the ``mysql`` system database, privilege tables, etc..) doesn't exist yet. That initialization step is a **separate, explicit action**.
+***
+
+#### The Data Directory
+
+MariaDB stores all of its actual data -- every database, every table, every row, plus the internal privilege tables that track users/grants -- as files on disk at ``/var/lib/mysql``. This path is baked into MariaDB's own default configuration; it's not something we chose, it's where the debian package confiures it to look by default.
+
+#### Why this matters for us ?
+
+This is the **exact path our named volime will need to target**, for the reason that without a volume mounted here, every ``docker compose down`` would wipe the entire WordPress database, since this path would otherwise just be part of the container's disposable writable layer.
+
+At this stage in the Dockerfile, we are not creating this directory ourselves or doing anything special to it -- ``apt-get install mariadb-server`` already creates it as part of installing the package. We are simply noting its exact path now.
+
+Using this command:
+
+```
+docker run --rm -it mariadb:1.0 ls -la /var/lib/mysql
+```
+
+We can inspect and see what state this directory is in immediately after install, before any of our own init logic runs.
+***
+
+### The Initialization Problem
+
+#### What "***initializing***" a MariaDB instance means:
+
+A freshly  installed MariaDB **binary** doesn't  know how to store data yet -- it needs an actual on-disk data structure to exist at ``/var/lib/mysql`` before it can start: system database (``mysql``, holding all the privilege tables -- who's allowed to log in as what, from where, with what permissions), and the physical files representing that sructure. The initialization step -- historically done via toold called ``mysql_install_db``, though modern MariaDB often does this automatically on first ``mariadbd`` startup if the data directory is emty -- creates all of that from scratch.
+
+**Critically**: this needs to happen exactly once per "***database instance's lifetime***", not once per container start, if we ran intialization everytime the container started, we'd **wipe and recreate the entire database from scratch on every restart** -- destroying all our WordPress data, defeating the entire purpose of the volume.
+***
+
+We need our container's startup logic to answer one question before doing anything else: ***Does ``/var/lib/mysql`` already contain an initialized database, or is it empty/fresh ?***
+
+* **If empty** (first run ever): run initialization, create the WordPress database, create the two required users with correct privielges, set the root password -- all the one-time setup -- then start ``mariadbd`` normally.
+
+* **If already initialized** (any subsequent run): skip all of that entirely, just start ``mariadb`` directly against the existing data.
+
+#### Why a plain ``ENTRYPOINT ["mariadbd"]`` isnt' enough ?
+
+Even setting aside te one-time-setup problem -- just running ``mariadbd`` directly, with nothing else, has no mechanims to ever create our WordPRess database or our two custom users in the first place. Those don't exist anywhere by default; they're specific to our project's requiements, and something has to actually issue the SQL (``CREATE DATABASE``, ``CREATE USER``,``GRANT``) to bring them into existence. That "something" has to be **scripted logic we will write ourselves**, conditonally run, before the real server process takes over as PID 1.
