@@ -143,3 +143,4 @@ An entry looks like:
 6. NGINX receives the TCP connection, and the TLS handshake begins -- Client hello, NGINX responds with its cert, etc...
 7. Once the handshake completes. NGINX reads the actual HTTP request, checks the ``Host`` header against ``server_name ayel-bou.42.fr;`` in our config -- since it matches -- serves the response from that ``server {}`` block.
 ***
+
