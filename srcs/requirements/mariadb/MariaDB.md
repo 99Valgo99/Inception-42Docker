@@ -125,3 +125,60 @@ We need our container's startup logic to answer one question before doing anythi
 #### Why a plain ``ENTRYPOINT ["mariadbd"]`` isnt' enough ?
 
 Even setting aside te one-time-setup problem -- just running ``mariadbd`` directly, with nothing else, has no mechanims to ever create our WordPRess database or our two custom users in the first place. Those don't exist anywhere by default; they're specific to our project's requiements, and something has to actually issue the SQL (``CREATE DATABASE``, ``CREATE USER``,``GRANT``) to bring them into existence. That "something" has to be **scripted logic we will write ourselves**, conditonally run, before the real server process takes over as PID 1.
+***
+
+### EntryPoint MariaDB Script
+
+#### The Logical Structure
+
+```
+1. Check: does /var/lib/mysql already contain an initialized database ?
+
+2. if NOT initialized:
+    a. Run MariaDB's own initialization (creates system tables)
+    b. Run mariadbd in --bootstrap mode, feeding it our setup SQL directly.
+3. Either way (freshly initialized, or already was):
+    hand off to mariadb as the real, permamnent PID 1 process
+```
+
+#### The script
+
+```
+#!/bin/bash
+
+# mariadb initializer script
+
+set -e
+
+DB_DIR="/var/lib/mysql"
+
+if [ ! -d "$DB_DIR/mysql" ]; then
+    mariadb-install-db --user=mysql --datadir="$DB_DIR"
+
+    mariadbd --user=mysql --bootstrap << EOSQL
+    CREATE DATABASE IF NOT EXISTS \'${MYSQL_DATABASE}\';
+    CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'%' IDENTIFIED BY '{MYSQL_PASSOWRD}';
+    GRANT ALL PRIVILEGES ON \'${MYSQL_DATABASE}\'.* TO '${MYSQL_USER}'@'%';
+    ALRER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+    FLUSH PRIVILEGES;
+    EOSQL
+fi
+
+exec mariadbd --user=mysql --datadir="$DB_DIR"
+```
+
+``set -e`` -- abort on any failure rather than forward into a broken state.
+
+``DB_DIR="/var/lib/mysql"`` -- readability/reuse. we expand this variable to read its value.
+
+``if [ ! -d "$DB_DIR/mysql" ]`` -- ``mariadb-install-db`` creates a subfolder literally named ``mysql`` inside the data directory on first run; its absence means it was never initialized, its presence means skip everything below, it was already done.
+
+``mariadb-install-db --user=mysql --datadir="$DB_DIR"`` -- user=mysql -- this tells ``mariadb-install-db`` which system/OS-level Linux user should own the files it's about to create. When ot creates all the database files on disk. it ``chown``'s them to this user rather than leaving them owned by root. The actual ``mariadb`` server process, when it runs, also runs as the same ``mysql`` user, not as root -- tihs is a basic secuirty practive (if the database process is ever compromized, the attacker has only the ``mysql`` user's limited permissions, not root). This ``mysql`` user already exists on the system automatically -- it gets created by Debian's ``mariadb_server`` package during installation, as its own dedicated system account.
+
+``mariadbd --user=mysql --bootstrap <<-EOSQL ... EOSQL``
+``mariadbd`` -- this is the actual MariaDB server binary itself (the daemon). Normally when we run this, it starts listening for network connections and keeps running forever as server. Here, we are running it in a special mode instead.
+
+``--bootstrap`` -- switches ``mariadbd`` into a completely different operating mode than normal server mode. Instead of listening on a network port and waiting for client connections indefinitely, bootstrap mode does hits: start up just enough internal machinery to execute SQL, **read a stream of SQL starements from stdin**, run them one by one, and then **exit automatically** once stdin edns. It's designed specifically for "***run some setup SQL once, then stop***" -- exactly our use case, and nothing else.
+
+``<<EOSQL ... EOSQL`` -- this is a **heredoc**, bash feature for feeding multiple lines of text into a command's stdin without needing a seperate file. Everything between ``<<-EOSQL``  becomes what ``mariadbd --bootstrap`` reads as its SQL input. 
+
