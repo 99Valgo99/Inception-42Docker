@@ -70,43 +70,7 @@ Thus "two users" in the subject's wording actually spans these two different lay
 #### Root user -- the other critical account
 
 MariaDB also has a built-in **root** superuser with unrestricted privileges across the entire server -- this is set via seperate root password (our ``sevrets/db_root_password.txt`` from the subject's example structure), distinct from the WordPress-specific user's password (``secrets/db_password.txt``). Root should never be what WordPress connects as -- WrodPress gets its own scoped-down user precisely so a compromise doesn't hand over full database server control
-
-## MariaDB Dockerfile
-
-```
-RUN apt-get update && apt-get install --no-install-recommends mariadb-server && rm -rf /var/lib/apt/lists/*
-```
-
-The same reasoning here is the same one explained in NGINX Dockerfile, One single ``RUN`` summing the ``update && install && cleanup``, and no installation of unecessary dependencies.
-
-#### Why just ``mariadb-server`` (no ``mariadb-client`` ?)
-
-On Debian, ``mariadb-server`` is the package that actually gives us the **server daemon** (``mariadbd``) -- the thing that listens on 3306 and does all the real work. It typically pulls in ``mariadb-client`` as **dependency automatically**, since server-side tooling (like the initialization scripts we will use) often shells out to client commands internally. So one package name is sufficient; we don't need to list both explicitly.
-
-#### What's different from NGINX's install, conceptually
-
-NGINX's package, once installed, is basically "***ready to run***" -- it has sensible defaults and just needs a config pointed at a cert. MariaDB's package is **not** ready to run out of the box in the same way: installing the package gives us the binary and default config, but the actual database (the physical files representing a working, initialized MariaDB instance -- the ``mysql`` system database, privilege tables, etc..) doesn't exist yet. That initialization step is a **separate, explicit action**.
 ***
-
-#### The Data Directory
-
-MariaDB stores all of its actual data -- every database, every table, every row, plus the internal privilege tables that track users/grants -- as files on disk at ``/var/lib/mysql``. This path is baked into MariaDB's own default configuration; it's not something we chose, it's where the debian package confiures it to look by default.
-
-#### Why this matters for us ?
-
-This is the **exact path our named volime will need to target**, for the reason that without a volume mounted here, every ``docker compose down`` would wipe the entire WordPress database, since this path would otherwise just be part of the container's disposable writable layer.
-
-At this stage in the Dockerfile, we are not creating this directory ourselves or doing anything special to it -- ``apt-get install mariadb-server`` already creates it as part of installing the package. We are simply noting its exact path now.
-
-Using this command:
-
-```
-docker run --rm -it mariadb:1.0 ls -la /var/lib/mysql
-```
-
-We can inspect and see what state this directory is in immediately after install, before any of our own init logic runs.
-***
-
 ### The Initialization Problem
 
 #### What "***initializing***" a MariaDB instance means:
@@ -182,3 +146,73 @@ exec mariadbd --user=mysql --datadir="$DB_DIR"
 
 ``<<EOSQL ... EOSQL`` -- this is a **heredoc**, bash feature for feeding multiple lines of text into a command's stdin without needing a seperate file. Everything between ``<<-EOSQL``  becomes what ``mariadbd --bootstrap`` reads as its SQL input. 
 
+```
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+```
+
+``root'@'localhost'`` already exists by default the moment MariaDB is installed/initialized -- we are not creating it, we are changing its password (``ALTER USER`` not ``CREATE USER``) from whatever default/blank state it starts in, to our chosen root password pulled from the secrets file.
+
+``FLUSH PRIVILEGES;`` -- Tells mariaDB to reload its in-memory privielge tables from what's now on disk. Historically necassary because privilege changes made via direct table edits didnt' always take effect immediately; with ``GRANT``/``CREATE USER`` statements (as used here) it's often not strictly required since those commands update te in-memory state automatically -- but it's a cheap, standard safety habit to include, guaranteeing the changes are efinitely active before we move on.
+
+## MariaDB Dockerfile
+
+```
+RUN apt-get update && apt-get install --no-install-recommends mariadb-server && rm -rf /var/lib/apt/lists/*
+
+COPY tools/mariadb.sh /mariadb.sh
+RUN chmod +x /mariadb.sh
+
+COPY conf/mariadb.cnf /etc/mysql/mariadb.conf.d/mariadb.cnf
+
+ENTRYPOINT ["mariadb.sh"]
+```
+
+The same reasoning here is the same one explained in NGINX Dockerfile, One single ``RUN`` summing the ``update && install && cleanup``, and no installation of unecessary dependencies.
+
+#### Why just ``mariadb-server`` (no ``mariadb-client`` ?)
+
+On Debian, ``mariadb-server`` is the package that actually gives us the **server daemon** (``mariadbd``) -- the thing that listens on 3306 and does all the real work. It typically pulls in ``mariadb-client`` as **dependency automatically**, since server-side tooling (like the initialization scripts we will use) often shells out to client commands internally. So one package name is sufficient; we don't need to list both explicitly.
+
+#### What's different from NGINX's install, conceptually
+
+NGINX's package, once installed, is basically "***ready to run***" -- it has sensible defaults and just needs a config pointed at a cert. MariaDB's package is **not** ready to run out of the box in the same way: installing the package gives us the binary and default config, but the actual database (the physical files representing a working, initialized MariaDB instance -- the ``mysql`` system database, privilege tables, etc..) doesn't exist yet. That initialization step is a **separate, explicit action**.
+
+#### The Data Directory
+
+MariaDB stores all of its actual data -- every database, every table, every row, plus the internal privilege tables that track users/grants -- as files on disk at ``/var/lib/mysql``. This path is baked into MariaDB's own default configuration; it's not something we chose, it's where the debian package confiures it to look by default.
+
+#### Why this matters for us ?
+
+This is the **exact path our named volime will need to target**, for the reason that without a volume mounted here, every ``docker compose down`` would wipe the entire WordPress database, since this path would otherwise just be part of the container's disposable writable layer.
+
+At this stage in the Dockerfile, we are not creating this directory ourselves or doing anything special to it -- ``apt-get install mariadb-server`` already creates it as part of installing the package. We are simply noting its exact path now.
+
+Using this command:
+
+```
+docker run --rm -it mariadb:1.0 ls -la /var/lib/mysql
+```
+
+We can inspect and see what state this directory is in immediately after install, before any of our own init logic runs.
+
+``COPY tools/mariadb.sh /mariadb.sh``, we have to copy the script file into the the root filesystem of the image, because the build context is different from where we store our script file, during the build mariadb service image contains only Debian for now, no context of the ``mariadb.sh`` script.
+
+``conf/mariadb.conf`` -- why MariaDB defaults to 127.0.0.1 in the first palce?
+
+This is a security default, not an oversight. ``127.0.0.1`` (loopback) means "***only accept connections originating from this same machine***". On a normal, non-contairnized server, this default exists so that installing MariaDB doesn't automatically expose a database to our entire network the moment it's running.
+
+Inside Docker, **each container is, from a networking perspective, its own separate machine**, thus 127.0.0.1 inside the MariaDB container refers only to MariaDB container itself -- not to WordPress's container, even though they're setting on the same Docker network. If WordPress tries to connect to ``mariadb:3306`` (by servie-name DNS resolution), that connection arrives at MariaDB's container as traffic coming from a **different IP** on the Docker bride network -- not ``127.0.0.1`` -- and MariaDB's default config would simply refuse it outright before even checking credentials.
+
+What does the actual file does
+
+```
+[mysqld]
+bind-address = 0.0.0.0
+```
+
+``[mysqld]`` is a config section header -- this setting applies specifically to ``mysqld/mariadbd`` server process (MariaDB's config format supports multiple sections for different tools).
+``bind-address = 0.0.0.0`` tells it to listen on **all available** network interfaces inside its container, not just the loopback -- meaning it will now accept incoming connection attempts arriving via the container's real network interface (the one connected to the ``inception`` Docker network), not just ones originating from inside itself.
+
+``COPY conf/mariadb.cnf /etc/mysql/mariadb.conf.d/mariadb.cnf``
+
+Debian's MariaDB package ships a main config file that contains an ``!includedir /etc/mysql/mariadb.conf.d/`` directive -- MariaDB's own syntax telling ``mariadbd``, at statup, to automatically read and merge every ``.cnf`` file sitting in that directory into its final configuration.

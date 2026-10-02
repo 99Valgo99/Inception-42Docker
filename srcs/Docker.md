@@ -143,4 +143,67 @@ An entry looks like:
 6. NGINX receives the TCP connection, and the TLS handshake begins -- Client hello, NGINX responds with its cert, etc...
 7. Once the handshake completes. NGINX reads the actual HTTP request, checks the ``Host`` header against ``server_name ayel-bou.42.fr;`` in our config -- since it matches -- serves the response from that ``server {}`` block.
 ***
+### Secrets & Environment Variables
 
+#### ``.env`` -- plain environment variables
+
+These are **not secret at all**, mechanically speaking -- any process with access to the container, or ``docker inspect``, can read them in plaintext. They're meant for **non-sensetive configuration**: things like the database name, the username (not the password), the domain name, Convenient, simple, visible.
+
+#### Docker secrets -- the actual protected mechanism
+
+Docker secrets are fundamentally different in **how they're delivered into the container**. Instead of being envireonment variables (visible via ``docker inspect``, visible to any process that can read the container's environment, potentially logged accidentally), a secret gets mounted as a **file**, at ``/run/secrets/<secret_name>``, inside the container's filesystem -- readable only by processses actually running inside the container, and **not** exposed via ``docker inspect`` or environment listing at all. This is why our script does ``DB_PASS=$(cat /run/secrets/db_password)`` -- reading secrets is a **file read**, not an environment variable access.
+
+#### Why both needed for different things
+
+Non-sensitive config (database name, username) -> ``.env`` is fine, no real risk in it being visible. Actual passwords -> Docker secrets, specifically because environment variables have a real, documented attack surface (process listing, accidental logging, ``docker inspect`` output, crash dumps) that file-base secrets avoid.
+
+#### Setting up the secrets files
+
+Per subject's example the directory structure to store the secrets should go as follows:
+
+```
+secrets/
+|--------> db_password.txt
+|--------> db_root_password.txt
+```
+
+Each file contains just the **raw password text**, nothing else -- no ``KEY=value`` format, no quotes, just the password itself on one line.
+
+#### Wiring secrets into ``docker-compose.yml``
+
+Docker secrets need to be declared at the **top level** of the compose file, then referenced per-service:
+
+```
+secrets:
+    db_password:
+        file: ../secrets/db_password.txt
+    db_root_password:
+        file: ../secrets/db_root_password.txt
+```
+
+Then under the ``mariadb`` service:
+
+```
+service:
+    mariadb:
+        secrets:
+            - db_password
+            - db_root_password
+```
+
+This makes DOcker mount those files at ``/run/secrets/db_password`` and ``/run/secrets/db_root_password`` **inside that specific container**, automatically -- no manual volume mounting needed for this, it's dedicated mechanism.
+
+#### Updating the entrypoint script
+
+```
+MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+MYSQL_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
+```
+
+As for ``$(MYSQL_DATABASE)`` and ``${MYSQL_USER}`` stay as genuine envireonment variables (from ``.env`` passed via compose's ``environment:`` key), since those aren't sensitive.
+
+``.gitignore``
+
+```
+secrets/
+```
