@@ -5,3 +5,5 @@
 * Asymmetric Encryption | (https://www.ibm.com/think/topics/asymmetric-encryption)
 * TLSv1.2 Vs TLSv1.3 | (https://www.a10networks.com/glossary/key-differences-between-tls-1-2-and-tls-1-3/)
 * Docker Network | (https://docs.docker.com/engine/network/)
+* Docker secrets | (https://docs.docker.com/compose/how-tos/use-secrets/)
+* Docker Env Variables | (https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/)

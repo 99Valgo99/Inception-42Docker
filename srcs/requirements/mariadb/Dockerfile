@@ -10,4 +10,6 @@ RUN chmod +x /mariadb.sh
 
 COPY conf/mariadb.cnf /etc/mysql/mariadb.conf.d/mariadb.cnf
 
+EXPOSE 3306
+
 ENTRYPOINT ["mariadb.sh"]

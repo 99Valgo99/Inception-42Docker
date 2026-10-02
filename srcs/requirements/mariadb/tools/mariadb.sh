@@ -4,8 +4,8 @@
 set -e
 
 DB_DIR="/var/lib/mysql"
-MYSQL_PASSWORD="$(cat /run/secrets/db_password.txt)"
-MYSQL_ROOT_PASSWORD="$(cat /run/secrets/db_root_password.txt)"
+MYSQL_PASSWORD="$(cat /run/secrets/db_password)"
+MYSQL_ROOT_PASSWORD="$(cat /run/secrets/db_root_password)"
 
 if [ ! -d "$DB_DIR/mysql" ]; then
     mariadb-install-db --user=mysql --datadir="$DB_DIR"

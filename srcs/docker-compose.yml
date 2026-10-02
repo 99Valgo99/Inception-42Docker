@@ -7,6 +7,24 @@ services:
       - "443:443"
     networks:
       - inception
+  mariadb:
+    container_name: mariadb
+    build: ./requirements/mariadb
+    image: mariadb:1.0
+    networks:
+      - inception
+    secrets:
+      - db_password
+      - db_root_password
+    environment:
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
 
 networks:
   inception:
+
+secrets:
+  db_password:
+    file: ../secrets/db_password.txt
+  db_root_password:
+    file: ../secrets/db_root_password.txt
