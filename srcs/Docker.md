@@ -207,3 +207,45 @@ As for ``$(MYSQL_DATABASE)`` and ``${MYSQL_USER}`` stay as genuine envireonment 
 ```
 secrets/
 ```
+
+### Docker Volumes
+
+A container's filesystem is built from the image's **read-only layers** plus one **writable layer** on top. Anything the running process writes -- new files, modified files -- goes into that writable layer, and **that writable layer belongs to one specific container instance, not the image.
+
+The moment that container is removec (``docker compose down``, ``docker rm`` or simply recreated by a rebuild), its **writable layer is deleted along with it**. A new container started from the same image gets a brand new, emtpy writable layer. Anything MariaDB wrote to ``/var/lib/mysql`` during that container's life -- our WordPress database, posts, users, everything -- would be gone, permanently, the instant that container is torn down.
+
+**Why this is unacceptable specifically for MariaDB**
+
+NGINX's container being torn down and recreated is harmless -- it has no meaningful state of its own.
+MariaDB is the opposite: its entire purpose is to hold state that must outlive any single container's lifecycle.
+Everyh ``docker compose down && up`` cycle during development, every crash-and-restart, every image rebuild -- none of these should ever wipe our actual data.
+
+**What we need, functionally**
+
+A way to designate ``/var/lib/mysql`` as not part of the container's disposable writable layer -- instead, backed by storage that exists independently of any single container, survives container removal, and gets re-attached to a new container the next time one starts.
+
+This what Docker's **volumes** mechanism exists to solve. There are two ways to actually implement this idea -- **bind mounts** and **named volumes** -- and the subject has a strong, explicit opinion about which one we're required to use here. That's exactly what we follow to.
+
+### Bind Mounts
+
+A bind mount takes a **path that already exists on our host machine's filesystem** and makes it directly visible inside the container, at whatever path we specify -- essentially a direct window from inside the container straight into a specific folder on the host. Nothing about the data moves or gets copied the container is just looking at the exact same files that live on our host, in real time, through this mapped path.
+
+```
+volumes:
+    -/home/ayel-bou/data/mysql:/var/lib/mysql
+```
+
+Here, the left side (``/home/ayel-bou/data/mysql``) is a **host path** we chose explicitly -- Docker doesn't manage it, doesn't abstarct it, it's just a regular folder on our machine that we point at directly.
+
+#### How this solves the persistence problem ?
+
+Since the host folder exists independently of any container, data written to ``/var/lib/mysql`` inside the container is actually written to that host folder -- so tearing down the container, rebuilding the image, starting a brand new container, all of that leaves the host folder completely untouched.
+
+#### The real tradeoffs
+
+We are fully **responsible for that host path's existence, permissions and correctness**. If the folder doesn't exist yet, Docker will typically just create it (sometimes with unexpected ownership -- often root, which cause permission mismatches with the ``mysql`` user inside the container).
+
+**Portability is weaker** -- the exact host path is hardcoded into our compose file -- move this project to a different machine with a different directory structure, and the bind mounth path needs manual adjustment.
+
+**Docker has less control/visibilty over it**. Since it's just an arbitrary host folder, Docker's own tooling (``docker volume ls``, ``docker volume insepct``) doesn't know anything baout it -- its' invisible to Docker's volume management entirely, it's purely an OS-Level mount.
+
