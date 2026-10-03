@@ -3,6 +3,7 @@ services:
     container_name: nginx
     build: ./requirements/nginx
     image: nginx:1.0
+    restart: unless-stopped
     ports:
       - "443:443"
     networks:
@@ -11,6 +12,7 @@ services:
     container_name: mariadb
     build: ./requirements/mariadb
     image: mariadb:1.0
+    restart: unless-stopped
     networks:
       - inception
     secrets:
