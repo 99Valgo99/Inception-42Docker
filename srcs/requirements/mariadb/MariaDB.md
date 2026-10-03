@@ -119,13 +119,20 @@ DB_DIR="/var/lib/mysql"
 if [ ! -d "$DB_DIR/mysql" ]; then
     mariadb-install-db --user=mysql --datadir="$DB_DIR"
 
-    mariadbd --user=mysql --bootstrap << EOSQL
-    CREATE DATABASE IF NOT EXISTS \'${MYSQL_DATABASE}\';
-    CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'%' IDENTIFIED BY '{MYSQL_PASSOWRD}';
-    GRANT ALL PRIVILEGES ON \'${MYSQL_DATABASE}\'.* TO '${MYSQL_USER}'@'%';
-    ALRER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
-    FLUSH PRIVILEGES;
-    EOSQL
+    mariadbd --user=mysql --datadir="$DB_DIR" --skip-networking &
+
+    until mariadb-admin ping --silent 2>/dev/null; do
+        sleep 1
+    done
+
+    mariadb -u root << EOSQL
+CREATE DATABASE IF NOT EXISTS \'${MYSQL_DATABASE}\';
+CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'%' IDENTIFIED BY '{MYSQL_PASSOWRD}';
+GRANT ALL PRIVILEGES ON \'${MYSQL_DATABASE}\'.* TO '${MYSQL_USER}'@'%';
+ALRER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+FLUSH PRIVILEGES;
+EOSQL
+    mariadb-admin -u root -p"${MYSWL_ROOT_PASSWORD}" shutdown
 fi
 
 exec mariadbd --user=mysql --datadir="$DB_DIR"
@@ -139,10 +146,15 @@ exec mariadbd --user=mysql --datadir="$DB_DIR"
 
 ``mariadb-install-db --user=mysql --datadir="$DB_DIR"`` -- user=mysql -- this tells ``mariadb-install-db`` which system/OS-level Linux user should own the files it's about to create. When ot creates all the database files on disk. it ``chown``'s them to this user rather than leaving them owned by root. The actual ``mariadb`` server process, when it runs, also runs as the same ``mysql`` user, not as root -- tihs is a basic secuirty practive (if the database process is ever compromized, the attacker has only the ``mysql`` user's limited permissions, not root). This ``mysql`` user already exists on the system automatically -- it gets created by Debian's ``mariadb_server`` package during installation, as its own dedicated system account.
 
-``mariadbd --user=mysql --bootstrap <<-EOSQL ... EOSQL``
-``mariadbd`` -- this is the actual MariaDB server binary itself (the daemon). Normally when we run this, it starts listening for network connections and keeps running forever as server. Here, we are running it in a special mode instead.
+``mariadb-admin`` this is a **seperate command-line client tool**, distinct from ``mariadb`` (the general-purpose SQL client we have already used to run queries). ``mariadb-admin`` is specifically for **server administration operations** -- things that arne't SQL queries at all, but direct administrative commands to the running server process. Think of ``mariadb`` as "talk to the database with SQL" and ``mariadb-admin`` as "manage the server".
 
-``--bootstrap`` -- switches ``mariadbd`` into a completely different operating mode than normal server mode. Instead of listening on a network port and waiting for client connections indefinitely, bootstrap mode does hits: start up just enough internal machinery to execute SQL, **read a stream of SQL starements from stdin**, run them one by one, and then **exit automatically** once stdin edns. It's designed specifically for "***run some setup SQL once, then stop***" -- exactly our use case, and nothing else.
+``mariadb-admin ping`` -- asks the server "are you alive and accepting connections yet?" it returns sucess/falure, nothing else -- exactly what we need to thereadiness-pilling loop, since we dont actually want to run real SQL just to check if the server's up.
+
+``mariadb-admin ... shutdown`` -- sends a clean shutdown command to the running server, telling it to close out gracefully.
+
+``skip-networking`` -- a startup flag for ``mariadbd`` itself; **don't open a TCP network listener at all** -- don't bind to any port. The server becomes reachable **only** via its local Unix socket.
+
+We ran MariaDB as root (-u root) because we have no other users around other than the ``root``, and since the root user has no ``password`` set, MariaDB forces us that the user launching the command must be named exactly as the Linux OS user, here it must match root, however once we set the ``MYSQL_ROOT_PASSWORD`` for ``root`` user, we send it when we``shutdown`` the connection to the mysql socket.
 
 ``<<EOSQL ... EOSQL`` -- this is a **heredoc**, bash feature for feeding multiple lines of text into a command's stdin without needing a seperate file. Everything between ``<<-EOSQL``  becomes what ``mariadbd --bootstrap`` reads as its SQL input. 
 
