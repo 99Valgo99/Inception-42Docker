@@ -70,3 +70,50 @@ Since NGINX and php are **deliberately seperate containers**, we must use **TCP*
 * **NGINX** needs them to directly serve the static assets (images, CSS, JS, uploaded media) without ever involving php-fpm at all.
 
 Since these are two seperate containers, each with its own isolated filesystem, the only way both can see the identical files is exactly a **shared named volume**, mounted into both containers at the same path (or at least, into both at a path each can correctly use).
+***
+
+### WordPress Dockerfile: Base + Install
+
+```
+FROM debian:bookworm
+```
+
+Same reasoning as NGINX and MariaDB -- consistency across all hree services, no justificaion needed for a different choice here.
+
+#### What packages does this container actually need?
+
+WordPress + php-fpm budles together a few genuinely distinc pieces:
+
+* **php-fpm** itself -- the actual daemon. On Debian, this is typically the ``php-fpm`` package (or a version-specific one like ``php8.2-fpm``, depending on what's in Debian bookworm's repos)
+
+* **PHP extension WordPress actually requires** -- PHP's core doesn't include everything WordPress needs by default.
+WordPress specifically requires, at minimum: ``php-mysqli`` (or ``php-mysql``) for talking to MariaDB, and commonly also needs things like ``php-curl``, ``php-gd``, ``php-xml``, ``php-mbstring`` -- the exact list depends on which WordPress features we want working correctly.
+
+* ``wp-cli`` -- this is the tool we will use to install/configure WordPress **non-interactively**. It's not a Debian Package -- it's a standalone PHP-based command-line tool, typically downloaded directly as a ``.phar`` file from WordPress's own project, then made executable.
+
+* **WordPress Itself** -- the actual application files (``wp-admin/``, ``wp-content/``, ``wp-login.php``, etc..). This isn't an apt package at all -- it's a ``.zip``/``.tar.gz`` archive downloaded from wordpress.org, which ``wp-cli`` can fetch and extract for us.
+
+* ``curl`` or ``wget`` -- needed as a build-time tool to actually download ``wp-cli`` and WordPress itself, if they're not already present in a minimal Debian image.
+***
+### Dockerfile
+
+```
+RUN apt-get update && apt-get install -y --no-install-recommends php-fpm php-mysqli curl && rm -rf /var/lib/apt/lists/*
+
+RUN curl -O https://raw.githubusercontent.com/wp-cli/gh-pages/ && chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp
+```
+
+``php-fpm`` -- The actual **daemon** -- the long running process that does PHP execution, listens on a port for FastCGI requests, and runs **WordPress**'s code when told to. This is the core piece of this entire container, everything else supports it.
+
+``php-mysqli`` -- a **PHP extension** -- not a standalone program, but a module that plugs into the PHP interpreter, giving PHP code the ability to open connections to MySQL/MariaDB server and run queries. Wihtout this, WordPress's PHP code would have no way to actually talk to our MariaDB container at all -- every WordPress operation that touches the database (loading a post, checking a login, serving a comment), ultimately goes through this extension's functions under the hood. ``mysqli`` stand for "***MySQL improved***", it's the modern, standard extension for this (there was an old ``mysql`` extension before, but its depricated/removed in current PHP versions).
+
+``curl`` -- A command-line HTTP client tool -- **not a PHP extension here**, just the plain shell urility, we need this purely as a **build-time tool**, to actually download ``wp-cli``'s ``.phar`` file and the WordPress source archive from the internet in the next Dockerfile steps. It has no role once the container is actually running WordPress.
+***
+
+``curl -O <url>`` -- downloads the file from that URL. ``-O`` tells curl to save it using the **same filename as the remove file** (``wp-cli.phar``), rather than needing to specify an output name manually.
+
+**What a ``.phar`` file actually is** -- PHP archive, a singe packaged file bundling an entire PHP application (code, dependencies, everything) into one executable unit -- conceptually similar to a Java ``.jar`` file. ``wp-cli`` shops this way specifically so it can be dropped anywhere and run directly, without needing a seperate install/extraction step.
+
+``chmod +x wp-cli.phar`` -- makes it executable, same reasoning as every other executable.
+
+``mv wp-cli.phar /user/local/bin/wp`` -- two things happening in one line: moves the file to ``/usr/local/bin``, a directory that's **already on the system's ``$PATH`` by Linux concention (this is the standard location ofr locally-installed, user-facing executables, distinct from ``/usr/bin/`` which is reserved for distro-package-managed binaries) -- meaning once it's here, we can just type ``wp`` from anywhere, rather than needing the full path or the ``.phar`` extension. The rename from ``wp-cli.phar`` to ``wp`` is purely for conveniece -- ``wp`` is the conventional, documented command name for this tool.
