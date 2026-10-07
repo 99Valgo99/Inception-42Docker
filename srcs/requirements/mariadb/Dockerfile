@@ -10,6 +10,9 @@ RUN chmod +x /mariadb.sh
 
 COPY conf/mariadb.cnf /etc/mysql/mariadb.conf.d/mariadb.cnf
 
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+    CMD mariadb-admin ping -u root -p"$(cat /run/secrets/db_root_password)" --silent || exit 1
+
 EXPOSE 3306
 
 ENTRYPOINT ["/mariadb.sh"]

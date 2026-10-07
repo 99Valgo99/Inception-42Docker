@@ -1,4 +1,5 @@
 #!/bin/sh
+# wordpress entrypoint script
 
 set -e
 

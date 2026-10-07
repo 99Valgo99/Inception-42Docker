@@ -269,6 +269,22 @@ fi
 exec php-fpm8.2 -F
 ```
 
-First we check if the file ``wp-config.php`` exists and present in the **WP_PATH** dir, if it does exist, we skip the other commands, if it exists and we ran the commands all over again, ``wp core download would try to re download and potentially overwrite WordPress's own core filse (probably harmless on its own, since it's just re-fetching the same core code), but ``wp config create`` would likely fail or refuse to overwrite an existing ``wp-config.php`` (or worse, silently overwrite it -- depends on the flags), and ``wp core install``/``wp user create`` would almost certanly error out, trying to install over an already-installed site and create users that already exist, at minimum, we will get a container that fails to start cleanly on every restart after the first; at worst, partial/inconsistent state.
+First we check if the file ``wp-config.php`` exists and present in the **WP_PATH** dir, if it does exist, we skip the other commands, if it exists and we ran the commands all over again, ``wp core download`` would try to re download and potentially overwrite WordPress's own core filse (probably harmless on its own, since it's just re-fetching the same core code), but ``wp config create`` would likely fail or refuse to overwrite an existing ``wp-config.php`` (or worse, silently overwrite it -- depends on the flags), and ``wp core install``/``wp user create`` would almost certanly error out, trying to install over an already-installed site and create users that already exist, at minimum, we will get a container that fails to start cleanly on every restart after the first; at worst, partial/inconsistent state.
 
-``exec php-fpm8.2 -F`` -- ``-F`` without it, php-fpm -- like NGINX before applying our fix -- **daemonizes by default**: forks into the background, and the original foreground process exits. if that happened after out ``exec`` already made the script becomes php-fpm, the forking behavior would still cause PID 1 to exit immediately once it hands off to its background child, reproduciton the same bahavior as "***Container dies seconds after starting***" failure. ``-F`` tells php-fpm explicitly: **stay in the foreground, don't fork, don't daemonize** -- be w well-behaved PID 1/
+``exec php-fpm8.2 -F`` -- ``-F`` without it, php-fpm -- like NGINX before applying our fix -- **daemonizes by default**: forks into the background, and the original foreground process exits. if that happened after out ``exec`` already made the script becomes php-fpm, the forking behavior would still cause PID 1 to exit immediately once it hands off to its background child, reproduciton the same bahavior as "***Container dies seconds after starting***" failure. ``-F`` tells php-fpm explicitly: **stay in the foreground, don't fork, don't daemonize** -- be w well-behaved PID 1.
+***
+
+```
+RUN sed -i 's|listen = /run/php/php8.2-fpm.sock|listen = 9000|g' /etc/php/8.2/fpm/pool.d/www.conf
+```
+
+``sed`` -- "stream editor" a Unix tool for performing text transfomrations on a file. line by line, without needing to open it in an interactive editor.
+
+``-i`` -- "In place" -- modifies the actual file directly, rather than showing the transformed result to stdout without touching the actual file.
+
+``'s|old|new|g`` -- this is ``sed``'s substitute command:
+
+* ``s`` -- the substitute operation itself.
+* ``|old|new|`` -- the ``|`` charachters here are delimiters -- ``sed`` uses ''/'' as the delimiters, but since our our old text itself is using ``/`` as a dir, we are using ``|`` instread.
+* ``g`` -- "global" -- replace every occurence on each matching line, not just hte first one found.
+***
