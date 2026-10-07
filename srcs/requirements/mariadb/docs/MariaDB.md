@@ -1,6 +1,6 @@
 ## MariaDB
 
-![Logo](../../../Img/MariaDB.png)
+![Logo](../../../../Img/MariaDB.png)
 ***
 
 ### What MariaDB actually is
@@ -20,7 +20,7 @@ MariaDB runs as a **server process** (``maradbd``, historically ``mysqld``) that
 
 If we look back at the subject's diagram:
 ***
-![Logo](../../../Img/Subject_diagram.png)
+![Logo](../../../../Img/Subject_diagram.png)
 ***
 MariaDB talks to **WordPress + PHP** only, over port 3306, entirely inside the Docker network -- never directly to NGINX, never exposed outside. This mirrors exactly the "***only NGINX is the entrypoint***" principle.
 MariaDB is the most sensitive component (it holds all actual site data -- posts, user credentials, everything), so it sits at the deepest, most isolated layer. If WordPRess's PHP layer is compromised, the attacker still only rearches MariaDB through whatever queries WordPress's own code is willing to execute -- they don't get a direct, unmediated connection to the database from outside.

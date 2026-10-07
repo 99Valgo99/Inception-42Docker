@@ -1,6 +1,6 @@
 ## Nginx
 
-![Logo](../../../Img/Nginx.png)
+![Logo](../../../../Img/Nginx.png)
 ***
 
 ### What NGINX actually is
