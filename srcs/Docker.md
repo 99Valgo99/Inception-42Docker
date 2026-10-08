@@ -302,3 +302,53 @@ volumes:
 ``driver_opts`` -- a block of driver-specific configuration options, passed through to whichever driver is in use. These options meaning depends entirely on the driver -- for the ``local`` driver specifically, they let us customize exactly how/where it stores data.
 
 ``type: none`` and ``o: bind`` -- this pairing, its telling Docker's ``local`` volume driver, internally to use a **bind-mount like mechanism under the hood** to back this volume. ``type: none`` (no filesystem type -- meaning; dont format/treat this as a mountable filesystem device, just bind) combined with ``o: bind`` tells Docker "***this volume's storage should just directly be this host directory, accessed via a bind-style mount***"
+***
+
+### Health Check Across containers
+
+Between all of our three services we have these cycle of dependency:
+
+NGINX depends on Wordpress in order to serve the appropriate files.
+Wordpress depends on MariaDB in order to host and establish its database on it.
+
+Thus we need some way to verify each dependant of a service not only if its up, but healthy and running:
+
+A ``healthcheck`` defines an actual **command that tests** the service's real functionality, not just "***does a process exists***". Docker runs the command repeatedly, on a shcedule **from inside the container's own environment, and watches its exist code**: ``0`` means the service responded correctly and is genuinely ready; any non-zero code means it isn't. Based on a run of consecutive results Docker assigns the container a real status -- ``starting``, ``healthy`` or ``unhealthy``.
+
+**The shared settings**
+
+* ``interval`` -- how often Docker runs the check once the container is up.
+
+* ``timeout`` -- how long a single check attempt is allowed to take before being counted as failure.
+
+* ``retries`` -- how many consecutive failures are tolerated before the container is marked ``unhealthy``.
+
+#### MariaDB Healthcheck
+
+```
+healthcheck:
+    test: "mariadb-admin ping -u root -password=$(cat /run/secrets/db_root_password)"
+    interval: number(s)
+    timeout: number(s)
+    retries: number
+```
+
+``mariadb-admin ping`` -- a purpose-built administrative command specifically for checking "**is this MariaDB server alive and accepting connections**". Unlike plain network ping. this performs a real authenticated connection attempt, meaning a successful result confirms the server is genuinely processsing client authentication, not just that some process is bound to a port.
+
+#### WordPress's Healthcheck
+
+```
+healthcheck:
+    test: "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""
+    interval: number(s)
+    timeout: number(s)
+    retries: number
+```
+
+``php -r "..."`` -- runs a short PHP snippet inline, using the ``php`` CLI binary akready present in the image.
+
+``fsockopen('host', port)`` -- attempts to open a raw TCP connection to this exact container's own port 9000, where our php-fpm pool (reconfigured via ``sed`` from its default Unix-socket setup to listen on this TCP port) is supposed to be listening. A successful connection returns a truthy value; failure returns ``false``.
+
+``@`` -- supresses PHP's warning output on a failed connection attempt. Keeping the healthchek's output clean.
+
+``exit(... ? 0 : 1)`` -- converts the connection result into a proper Unix exit code. This conversion is required, not optional ``fsockopen()`` returns a connection resource or ``false``, neither of which is already a valid interger exit code on its own -- without this explicit conversion, ``exit()`` would recieve the wrong kind of value and could
