@@ -13,9 +13,6 @@ RUN sed -i 's|listen = /run/php/php8.2-fpm.sock|listen = 9000|g' /etc/php/8.2/fp
 COPY tools/wordpress_start.sh /wordpress_start.sh
 RUN chmod +x /wordpress_start.sh
 
-HEALTHCHECK --start-period=30s --interval=5s --timeout=4s --retries=3 \
-    CMD curl -s --connect-timeout 2 telnet://127.0.0.1:9000 || exit 1
-
 EXPOSE 9000
 
 ENTRYPOINT ["/wordpress_start.sh"]

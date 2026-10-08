@@ -10,11 +10,10 @@ WP_ADMIN_PASSWORD="$(cat /run/secrets/wp_admin_password)"
 WP_USER_PASSWORD="$(cat /run/secrets/wp_user_password)"
 
 
-echo "BEFORE CONSIDTION"
-
+echo "------------------ Checking if wordpress files are installed... ------------------"
 
 if [ ! -f "$WP_PATH/wp-config.php" ]; then
-
+echo "------------------ Not Found: downloading - creating - installing ------------------"
 
         echo "INSIDE CONDITINO"
         wp core download --path="$WP_PATH" --allow-root
@@ -41,6 +40,9 @@ if [ ! -f "$WP_PATH/wp-config.php" ]; then
         --role=author \
         --path="$WP_PATH" \
         --allow-root
+echo "------------------ Download - creation - installation succeeded ------------------"
 fi
+
+echo "------------------ php-fpm is listening... ------------------"
 
 exec php-fpm8.2 -F

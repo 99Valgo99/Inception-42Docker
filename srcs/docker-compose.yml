@@ -11,7 +11,8 @@ services:
     volumes:
       - wordpress_volume:/var/www/html:ro
     depends_on:
-      - wordpress
+      wordpress:
+        condition: service_healthy
     
   wordpress:
     container_name: wordpress
@@ -27,6 +28,11 @@ services:
       - db_password
       - wp_user_password
       - wp_admin_password
+    healthcheck:
+      test: "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""
+      interval: 15s
+      timeout: 25s
+      retries: 5
     depends_on:
       mariadb:
         condition: service_healthy
@@ -46,12 +52,13 @@ services:
       - db_root_password
     healthcheck:
       test: "mariadb-admin ping -u root --password=$(cat /run/secrets/db_root_password)"
-      interval: 30s
-      timeout: 30s
+      interval: 15s
+      timeout: 25s
       retries: 5
    
 networks:
   inception:
+    driver: bridge
 
 volumes:
   mariadb_volume:
