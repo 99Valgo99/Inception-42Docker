@@ -15,7 +15,7 @@ if [ ! -d "$DB_DIR/mysql" ]; then
 
     mariadbd --user=mysql --datadir="$DB_DIR" --skip-networking &
 
-    until mariadb-admin ping --silent do
+    until mariadb-admin ping --silent; do
         sleep 1
     done
 

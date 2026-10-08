@@ -9,8 +9,15 @@ MYSQL_PASSWORD="$(cat /run/secrets/db_password)"
 WP_ADMIN_PASSWORD="$(cat /run/secrets/wp_admin_password)"
 WP_USER_PASSWORD="$(cat /run/secrets/wp_user_password)"
 
-if [ ! -f "$WP_PATH/wp-config.php"]; then
-        wp core download --path="$WP_PATH" -- allow-root
+
+echo "BEFORE CONSIDTION"
+
+
+if [ ! -f "$WP_PATH/wp-config.php" ]; then
+
+
+        echo "INSIDE CONDITINO"
+        wp core download --path="$WP_PATH" --allow-root
 
         wp config create \
         --path="$WP_PATH" \
@@ -22,11 +29,11 @@ if [ ! -f "$WP_PATH/wp-config.php"]; then
 
         wp core install \
         --path="$WP_PATH" \
-        --url="https://${DOMAIN_NAME}"
+        --url="https://${DOMAIN_NAME}" \
         --title="Inception" \
-        --admin_user="${WP_ADMIN_USER}"
-        --admin_password="${WP_ADMIN_PASSWORD}"
-        --admin_email="${WP_ADMIN_EMAUL}" \
+        --admin_user="${WP_ADMIN_USER}" \
+        --admin_password="${WP_ADMIN_PASSWORD}" \
+        --admin_email="${WP_ADMIN_EMAIL}" \
         --allow-root
 
         wp user create "${WP_USER}" "${WP_USER_EMAIL}" \

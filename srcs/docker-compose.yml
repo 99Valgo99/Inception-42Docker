@@ -11,8 +11,7 @@ services:
     volumes:
       - wordpress_volume:/var/www/html:ro
     depends_on:
-      wordpress:
-        condition: service_healthy
+      - wordpress
     
   wordpress:
     container_name: wordpress
@@ -25,6 +24,7 @@ services:
     volumes:
       - wordpress_volume:/var/www/html
     secrets:
+      - db_password
       - wp_user_password
       - wp_admin_password
     depends_on:
@@ -44,6 +44,11 @@ services:
     secrets:
       - db_password
       - db_root_password
+    healthcheck:
+      test: "mariadb-admin ping -u root --password=$(cat /run/secrets/db_root_password)"
+      interval: 30s
+      timeout: 30s
+      retries: 5
    
 networks:
   inception:
