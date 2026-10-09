@@ -30,8 +30,8 @@ services:
       - wp_admin_password
     healthcheck:
       test: "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""
-      interval: 15s
-      timeout: 25s
+      interval: 40s
+      timeout: 40s
       retries: 5
     depends_on:
       mariadb:
@@ -52,8 +52,8 @@ services:
       - db_root_password
     healthcheck:
       test: "mariadb-admin ping -u root --password=$(cat /run/secrets/db_root_password)"
-      interval: 15s
-      timeout: 25s
+      interval: 40s
+      timeout: 40s
       retries: 5
    
 networks:

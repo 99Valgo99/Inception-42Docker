@@ -15,7 +15,6 @@ echo "------------------ Checking if wordpress files are installed... ----------
 if [ ! -f "$WP_PATH/wp-config.php" ]; then
 echo "------------------ Not Found: downloading - creating - installing ------------------"
 
-        echo "INSIDE CONDITINO"
         wp core download --path="$WP_PATH" --allow-root
 
         wp config create \
