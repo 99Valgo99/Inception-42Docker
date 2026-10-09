@@ -15,7 +15,4 @@ RUN openssl req -x509 -nodes -days 111 \
 
 COPY  conf/extended.conf /etc/nginx/conf.d/extended.conf
 
-# For testing...Remove Later
-COPY site/index.html /var/www/html/index.html 
-
 ENTRYPOINT ["nginx", "-g", "daemon off;"]
