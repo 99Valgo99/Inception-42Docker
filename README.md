@@ -1,7 +1,3 @@
-
-
-Readme · MD
- 
 # Inception
 
 ![Logo](Img/Inception.png)
