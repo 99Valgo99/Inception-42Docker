@@ -1,0 +1,354 @@
+## Docker Fundamentals
+
+### **image** vs **Container**
+
+A **Docker Image** is a **read-only template** -- a stack of filesystem layers (**OverlayFS** lower layres) plus metadata (what command to run, what ports are documented, what env vars are default). It does nothing by itself, it's inert, sitting on disk, buildable and shareable.
+
+A **Container** is a **running instance of an image** -- the image's layers mounted read-only, plus one new writable layer on top (the ``upper`` dir built by **OverlayFS**), plus an actual running process (PID 1 inside its own PID namespace), plus its own network namespace, mount namespace, etc...
+
+Analogy that maps cleanly onto this: the image is like a class definition; the container is an instantiated object. We can spin up multiple containers from the same image -- each gets its own writable layer and namespaces, but shares the same read-only image laters underneath (zero duplication).
+***
+
+### What ``docker build`` does:
+
+```
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ngnix
+COPY conf/ngnix.conf /etc/ngnix/ngnix.conf
+```
+
+1. CLI tars the build context, sends it to ``dockerd``.
+2. ``dokcerd`` reads the Dockerfile instructions top to bottom
+3. ``FROM debian:bookworm-slim`` -- pulls (or reuses if cached) the base image's layers, this is the only pull happening in the whole project, and it's explicitly excluded from the ***"no pulling ready-made images"*** rule
+4. Each ``RUN``/``COPY``/**etc**, produces exactly **one new layer**, and ``dockerd`` caches each layer keyed by (previous layer + this instruction + its input). If we rebuild and nothing changed up to a given instruction, that layer is reused instantly instead of recomputed -- this is why instrcution order in a Dockerfile matters (put things that change often like ``COPY``, after things that don't, like ``apt-get install``, so cache hits happen more)
+5. The final layer stack + metadata (like what ``ENTRYPOINT`` to run) get tagged with the name we gave it (``ngnix``, pet the subject's ***"image name = service name"*** rule) -- this tag now refers to an **image**. still nothing is running.
+***
+
+### What ``docker compose up`` does:
+
+``docker-compose.yml`` describes a desired state: which servvices exist, which images/Dockerfiles they come from, what network(s) they're on, what volumes they mount, what env vars they get. WHen we run ``docker compose up``:
+
+1. Compose reads the YAML, resolves ``${VARIABLES}`` from ``.env``.
+2. For each service with a ``build:`` key, it runs the equivalent of ``docker build`` for that service's Dockerfile if the image doesn't exist yet or --build was passed
+3. It creates the custom network if it doesn't exist
+4. It creates named volumes if they don't exist
+5. For each service, it creates a **container** from that image, attaches it to the network (with the service name as its DNS hostname), mounts the volumes, injects the nev vars, and start PID 1 inside it
+
+``docker compose up`` runs ``docker build`` internally, once per servcie that has a ``build:`` **key**, using that service's own **Dockerfile** (found via the path we point it to in ``docker-compose.yml`` e.g ``srcs/requirements/ngnix/Dockerfile``).
+Each of those builds produce one image, independently. Once all needed images exist, Compose then create one container from each image, wires them onto the network, attaches volumes, and starts them,
+
+So the sequence for our project, goes on the following order once we hit ``docker compose up``:
+
+* Build ``ngnix`` image from ``srcs/requirements/ngnix/Dockerfile``
+* Build ``mariadb`` image from ``srcs/requirements/mariadb/Dockerfile``
+* Build ``wordpress`` image from ``srcs/requirements/wordpress/Dockerfile``
+* Create the custom network
+* Create the named volumes
+* Start a container from each of the 3 images, attach to network, mount volimes
+***
+
+## Docker Compose
+
+```
+services:
+    service_name:
+        container_name: service_name
+        build: ./path
+        image: servive_name:1.0
+        ports:
+            - "portN:portN"
+        networks:
+            - inception
+networks:
+    inception:
+```
+
+* ``services:`` is the top-level key. Everything under it is one service, and each service becomes one container. Later ``mariadb`` and ``wordpress`` will sit next to ``nginx`` at this same level.
+
+* ``service_name:`` is the service name. It has two jobs:
+
+> the subject requires each image to have the same name as its service, and Compose registers the service name as a **DNS Hostname** on the Docker network. This is how WordPress will reach ``mariadb`` by name.
+
+* ``build: ./path`` is the build context. The path is relative to the compose file's location (``srcs/``), so it resolves to ``srcs/requirements/nginx``. Compose sends that folder to ``dockerd`` and finds the ``Dockerfile`` inside it by default, with no extra flag needed. Then Compose runs ``docker build``.
+
+* ``image: service_name:1.0`` names and tags the image Compose builds. Without this line, Compose auto-names it something like ``srcs-service_name``, which breaks the same-name rule. The explicit tag matters too, otherwise without it it will be implicitly tagged ``latest``, and ``docker images`` would then show ``nginx:latest``, which based on the subject is banned.
+
+* ``container_name: service_name`` it sets the name Docker gives the running container, so we can refer to it by name we chose in CLI as: ``docker exec -it service_name sh``, ``docker logs service_name`` or ``docker stop service_name``. Without it, Compose will generate a name from the project folder and service something as ``srcs-service_name-1``.
+
+* ``ports: "portN:portN"`` the format is ``HOST:CONTAINER``, the left number is the port on our Host Machine, the right number is the port inside the container. Traffic hitting the host on 443 gets forwarded to the container's 443, where NGINX is listening. ``EXPOSE`` in the nginx Dockerfile was merely a documetnation, meanwhile ``ports:`` is what enforces it. we use quotes around the ``"port:port"`` because YAML can interpret unquoted numbers ``xx:yy`` as base-60 numbers in some edge cases, Compose doces recommend always quoting port mappings
+
+* ``networks:`` **at the top level** declares the network itself. ``inception:`` is just the name we are giving it, what we will see when we do ``docker network ls``
+
+* ``netowkrs:`` **inside the service** attaches that container to it. any other container that uses the same name, attaches itself into the same network, and the services can resolve each other by ``service_name``
+
+## Makefile
+
+```
+all: up
+
+up: docker compose -f srcs/docker-compose.yml up --build
+
+down: docker compose -f srcs/docker-compose.yml down
+
+clean: down
+
+fclean: down
+    docker system prune -af
+
+re: fclean up
+
+.PHOMY: all up down clean fclean re
+```
+
+``-f srcs/docker-compose.yml`` -- tells Docker Compose exactly which file to use, since the Makefile sits at the repo root while the compose file lives at ``srcs/`` without the -f, Compose looks for the compose file in the root directory.
+
+``--build`` on ``up`` -- forces Compose to rebuild images before starting rather than silently reusing a stale cached image if we have edited a Dockerfile since the last run. Without it, ``up`` will happily start a container from an old image, and we could sit there confused why our changes aren't showing up.
+
+``down`` -- stops and remove the containers and the network, but not volumes or images by default. That's the correct "***give me a clean slate to restart***" step fro iterating during development.
+
+``fclean`` -- goes further, after tearing down, ``docker system prune -af`` removes all stopped containers, unused networks, and **all images not currently used by a container** (``-a`` includes images with no container at all. ``-f`` skips the confirmation prompt). This is a destructive command -- it prunes Docker-wide on our machine, for each container the image its built upon gets an ID Hash, so prune checks for the image ID if its referenced in the container object, if not it gets deleted, same goes for the network, the network has an ID, if any container is referenced in it, it does not get deleted until that container is down.
+
+``re`` -- full rebuild from scratch: tear everything down, then bring it back up new.
+
+``.PHONY`` -- tells ``make`` that these target names aren't actual files on disk. Without this, if a file literally named ``clean`` or ``up`` even existed in our repo root, ``make`` could get confused about wheter the target is "up to date" and skip running it. Doesnt affect functionality, but worth checking.
+***
+### How DNS Resolution works -- How its linked to ``/etc/hosts``
+
+#### DNS resolution:
+
+When we want to access a website through the browser the following chain occurs:
+
+1. **Browser checks its own cache** -- has it resolved this domain lately ? if yes, skip everything below and reuse that IP
+2. **OS-Level resolver gets asked** -- the browser hands the lookup to the OS networking stack
+3. **The OS checks a local hosts file first** -- before ever going out to the network. This is ``/etc/hosts`` on Linux/MacOS (``C:\Windows\System32\drivers\etc\hosts`` on Windows). This file is literally a static, manually-editable list of ``IP <------> domain`` pairs -- the oldest, simpliest form of resoltion, predating DNS itself.
+4. **Only if there's no match in ``/etc/hosts`` does the OS actually go out over the network -- asking a configuered DNS resolver (often router..), which recursively queries root servers -> TLD servers -> authoritative servers for that domain, eventually getting back an IP address.
+5. That IP gets returned to the browser, which then opens a TCP connection to it.
+***
+
+#### Where ``/etc/hosts`` fits in -- and why it short-cirtuits everything
+
+``/etc/hosts`` sits at **step 3 above**, checked before any real DNS query is even attempted. If our entry is there, resolution **stops immediately** the OS never contacts a DNS server at all for that domain. This is previsely why it works for ``ayel-bou.42.fr``, a domain that doesn't exist anywhere in real, public DNS: our machine never even tries ask the internet about it, because it find a local answer first and stops looking.
+
+An entry looks like:
+
+```
+127.0.0.1       ayel-bou.42.fr
+```
+
+1. we type ``https://ayel-bou.42.fr`` into the browser.
+2. Browser asks the OS to resolve ``ayel-bou.42.fr``.
+3. OS reads ``/etc/hosts``, finds our line, returns ``127.0.0.1`` immediately -- no real DNS involved at all.
+4. Browser now has an IP. it opens a TCP connection to ``127.0.0.1:443`` (443 because of ``https://``)
+5. Docker's iptables rules intercept traffic hitting the host on 443 and forward it (DNAT) into the NGINX container's own 443.
+6. NGINX receives the TCP connection, and the TLS handshake begins -- Client hello, NGINX responds with its cert, etc...
+7. Once the handshake completes. NGINX reads the actual HTTP request, checks the ``Host`` header against ``server_name ayel-bou.42.fr;`` in our config -- since it matches -- serves the response from that ``server {}`` block.
+***
+### Secrets & Environment Variables
+
+#### ``.env`` -- plain environment variables
+
+These are **not secret at all**, mechanically speaking -- any process with access to the container, or ``docker inspect``, can read them in plaintext. They're meant for **non-sensetive configuration**: things like the database name, the username (not the password), the domain name, Convenient, simple, visible.
+
+#### Docker secrets -- the actual protected mechanism
+
+Docker secrets are fundamentally different in **how they're delivered into the container**. Instead of being envireonment variables (visible via ``docker inspect``, visible to any process that can read the container's environment, potentially logged accidentally), a secret gets mounted as a **file**, at ``/run/secrets/<secret_name>``, inside the container's filesystem -- readable only by processses actually running inside the container, and **not** exposed via ``docker inspect`` or environment listing at all. This is why our script does ``DB_PASS=$(cat /run/secrets/db_password)`` -- reading secrets is a **file read**, not an environment variable access.
+
+#### Why both needed for different things
+
+Non-sensitive config (database name, username) -> ``.env`` is fine, no real risk in it being visible. Actual passwords -> Docker secrets, specifically because environment variables have a real, documented attack surface (process listing, accidental logging, ``docker inspect`` output, crash dumps) that file-base secrets avoid.
+
+#### Setting up the secrets files
+
+Per subject's example the directory structure to store the secrets should go as follows:
+
+```
+secrets/
+|--------> db_password.txt
+|--------> db_root_password.txt
+```
+
+Each file contains just the **raw password text**, nothing else -- no ``KEY=value`` format, no quotes, just the password itself on one line.
+
+#### Wiring secrets into ``docker-compose.yml``
+
+Docker secrets need to be declared at the **top level** of the compose file, then referenced per-service:
+
+```
+secrets:
+    db_password:
+        file: ../secrets/db_password.txt
+    db_root_password:
+        file: ../secrets/db_root_password.txt
+```
+
+Then under the ``mariadb`` service:
+
+```
+service:
+    mariadb:
+        secrets:
+            - db_password
+            - db_root_password
+```
+
+This makes DOcker mount those files at ``/run/secrets/db_password`` and ``/run/secrets/db_root_password`` **inside that specific container**, automatically -- no manual volume mounting needed for this, it's dedicated mechanism.
+
+#### Updating the entrypoint script
+
+```
+MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+MYSQL_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
+```
+
+As for ``$(MYSQL_DATABASE)`` and ``${MYSQL_USER}`` stay as genuine envireonment variables (from ``.env`` passed via compose's ``environment:`` key), since those aren't sensitive.
+
+``.gitignore``
+
+```
+secrets/
+```
+
+***
+### Docker Volumes
+
+A container's filesystem is built from the image's **read-only layers** plus one **writable layer** on top. Anything the running process writes -- new files, modified files -- goes into that writable layer, and **that writable layer belongs to one specific container instance, not the image.
+
+The moment that container is removec (``docker compose down``, ``docker rm`` or simply recreated by a rebuild), its **writable layer is deleted along with it**. A new container started from the same image gets a brand new, emtpy writable layer. Anything MariaDB wrote to ``/var/lib/mysql`` during that container's life -- our WordPress database, posts, users, everything -- would be gone, permanently, the instant that container is torn down.
+
+**Why this is unacceptable specifically for MariaDB**
+
+NGINX's container being torn down and recreated is harmless -- it has no meaningful state of its own.
+MariaDB is the opposite: its entire purpose is to hold state that must outlive any single container's lifecycle.
+Everyh ``docker compose down && up`` cycle during development, every crash-and-restart, every image rebuild -- none of these should ever wipe our actual data.
+
+**What we need, functionally**
+
+A way to designate ``/var/lib/mysql`` as not part of the container's disposable writable layer -- instead, backed by storage that exists independently of any single container, survives container removal, and gets re-attached to a new container the next time one starts.
+
+This what Docker's **volumes** mechanism exists to solve. There are two ways to actually implement this idea -- **bind mounts** and **named volumes** -- and the subject has a strong, explicit opinion about which one we're required to use here. That's exactly what we follow to.
+
+### Bind Mounts
+
+A bind mount takes a **path that already exists on our host machine's filesystem** and makes it directly visible inside the container, at whatever path we specify -- essentially a direct window from inside the container straight into a specific folder on the host. Nothing about the data moves or gets copied the container is just looking at the exact same files that live on our host, in real time, through this mapped path.
+
+```
+volumes:
+    -/home/ayel-bou/data/mysql:/var/lib/mysql
+```
+
+Here, the left side (``/home/ayel-bou/data/mysql``) is a **host path** we chose explicitly -- Docker doesn't manage it, doesn't abstarct it, it's just a regular folder on our machine that we point at directly.
+
+#### How this solves the persistence problem ?
+
+Since the host folder exists independently of any container, data written to ``/var/lib/mysql`` inside the container is actually written to that host folder -- so tearing down the container, rebuilding the image, starting a brand new container, all of that leaves the host folder completely untouched.
+
+#### The real tradeoffs
+
+We are fully **responsible for that host path's existence, permissions and correctness**. If the folder doesn't exist yet, Docker will typically just create it (sometimes with unexpected ownership -- often root, which cause permission mismatches with the ``mysql`` user inside the container).
+
+**Portability is weaker** -- the exact host path is hardcoded into our compose file -- move this project to a different machine with a different directory structure, and the bind mounth path needs manual adjustment.
+
+**Docker has less control/visibilty over it**. Since it's just an arbitrary host folder, Docker's own tooling (``docker volume ls``, ``docker volume insepct``) doesn't know anything baout it -- its' invisible to Docker's volume management entirely, it's purely an OS-Level mount.
+
+### Named Volumes
+
+Instead of we specifyinig a literal host path, we give Docker just a **name**, and Docker itself manages everything about where that data actually lives on the host -- we don't need to know or care about the exact path.
+
+```
+volumes:
+    mariadb_data:
+
+services:
+    mariadb:
+    ...
+    volumes:
+        - mariadb_data:/var/lib/mysql
+```
+
+Here, ``mariadb_data`` is just a logical name, not a filesystem path.
+
+Docker creates and manages the actual underlying storage itself, by default somewhere under ``/var/lib/docker/volumes/<volume_name>/_data/`` on the host -- a location Docker controls, not something we reference directly in our compose file.
+
+#### How does this solves the problem ?
+
+Same fundamental mechanism as a bind mount underneath -- it's still just a host-side directory, still bypasses the container's disposable writable layer, data still survices container removal/recreation. The difference is entirely about **who manages the path and how it's referenced**, not about the persistence guarantee itself.
+
+#### The real advantage over a bind mount
+
+**Portability** -- our compose file says ``mariadb_data`` -- no hardcoded username, no hardcoded absoulte path, the exact same compose file works identically on our laptop, schools' laptop, any other OS. Docker figures out the actual storage location on whichever host it's running on.
+
+**Docker actually knows about it** ``docker volume ls``, ``docker volume inspect mariadb_data``, ``docker volume rm`` -- all of Docker's own tooling can see, inspect, and manage named volumes directly, since Docker created and tracks them as first-class objects.
+
+**Correct ownership/permissions, generally handled more gracefully** -- since Docker creates and manages the underlying storage itself, we are liess likely to run into the "***accidentally root-owned folder***" problem bind mount can introduce.
+
+### ``driver_opts``: Redirecting a Named Volume's Host Location
+
+By default, a named volume's actual data lives wherevre Docker's default volume driver decides
+
+But Docker's volume declaration syntax lets us **ovveride exactly where the underlying storage lives**, while the volume itself remains a fully Docker-managed named volume -- tracked, inspectable, portable by name -- not a bind mount.
+
+```
+volumes:
+    mariadb_data:
+        driver: local
+        driver_opts:
+            type: none
+            o: bind
+            device: /home/ayel-bou/data/mariadb
+```
+
+``driver: local`` -- explictly specifies the **volume driver** Docker should use to manage this volume. ``local`` is Docker's default, built-in driver (handles volumes using the local host's filesystem)
+
+``driver_opts`` -- a block of driver-specific configuration options, passed through to whichever driver is in use. These options meaning depends entirely on the driver -- for the ``local`` driver specifically, they let us customize exactly how/where it stores data.
+
+``type: none`` and ``o: bind`` -- this pairing, its telling Docker's ``local`` volume driver, internally to use a **bind-mount like mechanism under the hood** to back this volume. ``type: none`` (no filesystem type -- meaning; dont format/treat this as a mountable filesystem device, just bind) combined with ``o: bind`` tells Docker "***this volume's storage should just directly be this host directory, accessed via a bind-style mount***"
+***
+
+### Health Check Across containers
+
+Between all of our three services we have these cycle of dependency:
+
+NGINX depends on Wordpress in order to serve the appropriate files.
+Wordpress depends on MariaDB in order to host and establish its database on it.
+
+Thus we need some way to verify each dependant of a service not only if its up, but healthy and running:
+
+A ``healthcheck`` defines an actual **command that tests** the service's real functionality, not just "***does a process exists***". Docker runs the command repeatedly, on a shcedule **from inside the container's own environment, and watches its exist code**: ``0`` means the service responded correctly and is genuinely ready; any non-zero code means it isn't. Based on a run of consecutive results Docker assigns the container a real status -- ``starting``, ``healthy`` or ``unhealthy``.
+
+**The shared settings**
+
+* ``interval`` -- how often Docker runs the check once the container is up.
+
+* ``timeout`` -- how long a single check attempt is allowed to take before being counted as failure.
+
+* ``retries`` -- how many consecutive failures are tolerated before the container is marked ``unhealthy``.
+
+#### MariaDB Healthcheck
+
+```
+healthcheck:
+    test: "mariadb-admin ping -u root -password=$(cat /run/secrets/db_root_password)"
+    interval: number(s)
+    timeout: number(s)
+    retries: number
+```
+
+``mariadb-admin ping`` -- a purpose-built administrative command specifically for checking "**is this MariaDB server alive and accepting connections**". Unlike plain network ping. this performs a real authenticated connection attempt, meaning a successful result confirms the server is genuinely processsing client authentication, not just that some process is bound to a port.
+
+#### WordPress's Healthcheck
+
+```
+healthcheck:
+    test: "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""
+    interval: number(s)
+    timeout: number(s)
+    retries: number
+```
+
+``php -r "..."`` -- runs a short PHP snippet inline, using the ``php`` CLI binary akready present in the image.
+
+``fsockopen('host', port)`` -- attempts to open a raw TCP connection to this exact container's own port 9000, where our php-fpm pool (reconfigured via ``sed`` from its default Unix-socket setup to listen on this TCP port) is supposed to be listening. A successful connection returns a truthy value; failure returns ``false``.
+
+``@`` -- supresses PHP's warning output on a failed connection attempt. Keeping the healthchek's output clean.
+
+``exit(... ? 0 : 1)`` -- converts the connection result into a proper Unix exit code. This conversion is required, not optional ``fsockopen()`` returns a connection resource or ``false``, neither of which is already a valid interger exit code on its own -- without this explicit conversion, ``exit()`` would recieve the wrong kind of value and could
